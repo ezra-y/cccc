@@ -41,8 +41,13 @@ pub(crate) fn system_browser_path() -> Option<PathBuf> {
     system_browser::find_system_browser().map(|(path, _)| path)
 }
 
+pub(crate) const SHARED_WEB_MODEL_KEY: &str = "shared-chatgpt-web-model";
+
 #[derive(Default)]
 pub struct BrowserSurfaces {
+    // ponytail: one physical ChatGPT page; serialize whole navigations/submissions,
+    // not each low-level call. Per-page locks can replace this if tabs are introduced.
+    pub(crate) web_model_operation: Mutex<()>,
     pub(super) sessions: Mutex<HashMap<String, Session>>,
     key_operations: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     profile_operations: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,

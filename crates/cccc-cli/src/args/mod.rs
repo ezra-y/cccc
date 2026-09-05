@@ -130,7 +130,11 @@ pub enum CommandKind {
     Update(UpdateArgs),
     Version,
     Home,
-    Mcp,
+    Mcp {
+        /// Route trusted ChatGPT tunnel calls by their bound conversation.
+        #[arg(long)]
+        gateway: bool,
+    },
     Web(WebArgs),
 }
 
@@ -186,6 +190,23 @@ pub enum HermesAction {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mcp_gateway_is_explicitly_opt_in() {
+        use clap::Parser;
+        let plain = super::Cli::try_parse_from(["cccc", "mcp"]).expect("plain MCP");
+        assert!(matches!(
+            plain.command,
+            Some(super::CommandKind::Mcp { gateway: false })
+        ));
+        let gateway =
+            super::Cli::try_parse_from(["cccc", "mcp", "--gateway"]).expect("gateway MCP");
+        assert!(matches!(
+            gateway.command,
+            Some(super::CommandKind::Mcp { gateway: true })
+        ));
+        assert!(super::Cli::try_parse_from(["cccc", "mcp", "--unknown"]).is_err());
+    }
+
     use super::*;
 
     #[test]

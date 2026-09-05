@@ -23,14 +23,26 @@ pub(crate) async fn call_with_context(
     context: Option<RequestContext<'_>>,
     via_capability_use: bool,
 ) -> Result<Value, ToolCallError> {
+    if let Some(context) = context {
+        crate::session_gateway::authorize_call(home, name, &arguments, context)?;
+    }
     add_runtime_context(home, &mut arguments);
     if let Some(context) = context {
-        apply_request_context(&mut arguments, context);
+        apply_request_context(name, &mut arguments, context);
     }
     if name == "cccc_task" {
         prepare_task_arguments(home, &mut arguments)?;
     }
     authorize_tool(home, name, &arguments, via_capability_use)?;
+    if context.is_some_and(|context| context.gateway_session.is_some())
+        && name == "cccc_group"
+        && arguments.get("action").and_then(Value::as_str) == Some("list")
+    {
+        let result = daemon(client, "group_show", arguments).await?;
+        return Ok(tool_result(
+            json!({"groups":[result.get("group").cloned().unwrap_or(Value::Null)]}),
+        ));
+    }
     if name == "cccc_capability_use" {
         return capability_use(home, client, arguments, context).await;
     }
@@ -79,7 +91,7 @@ pub(crate) async fn call_with_context(
             .map(|runtime| runtime.name)
             .collect::<Vec<_>>() }),
         name if is_repo_tool(name) => {
-            let result = crate::local_tools::call(home, client, name, arguments).await?;
+            let result = crate::local_tools::call(home, client, name, arguments, context).await?;
             return Ok(if message_operation {
                 let (group_id, actor_id) = message_context.as_ref().expect("message context");
                 with_post_message_context(home, result, group_id, actor_id)
@@ -769,17 +781,23 @@ fn apply_actor_context(args: &mut Map<String, Value>, actor: Option<&str>) {
     }
 }
 
-fn apply_request_context(args: &mut Map<String, Value>, context: RequestContext<'_>) {
+fn apply_request_context(name: &str, args: &mut Map<String, Value>, context: RequestContext<'_>) {
     // A remote connector is bound to exactly one actor and group. Its request
     // arguments are model-controlled, so the request-scoped binding is authoritative.
     args.insert(
         "group_id".into(),
         Value::String(context.group_id.to_owned()),
     );
-    args.insert(
-        "actor_id".into(),
-        Value::String(context.actor_id.to_owned()),
-    );
+    // Actor administration names a target; the caller remains the bound Foreman.
+    if matches!(name, "cccc_actor" | "cccc_actor_notes") {
+        args.entry("actor_id")
+            .or_insert_with(|| Value::String(context.actor_id.to_owned()));
+    } else {
+        args.insert(
+            "actor_id".into(),
+            Value::String(context.actor_id.to_owned()),
+        );
+    }
     args.insert("by".into(), Value::String(context.actor_id.to_owned()));
 }
 
@@ -1038,6 +1056,7 @@ mod tests {
         let context = Some(RequestContext {
             group_id: &group.group_id,
             actor_id: "user",
+            gateway_session: None,
         });
         let enabled = super::call_with_context(
             &home,
@@ -1205,10 +1224,12 @@ mod tests {
             .expect("args");
 
         apply_request_context(
+            "cccc_bootstrap",
             &mut args,
             RequestContext {
                 group_id: "bound-group",
                 actor_id: "bound-actor",
+                gateway_session: None,
             },
         );
 

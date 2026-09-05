@@ -130,7 +130,14 @@ fn finish_create(
             .attach(store, &group_id, detected)
             .map_err(OpError::io)?;
         steps.append(home, request, &group)?;
-        steps.activate(home, &group_id).map_err(OpError::io)?;
+        if request
+            .args
+            .get("set_active")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+        {
+            steps.activate(home, &group_id).map_err(OpError::io)?;
+        }
         Ok(group)
     })();
     result.map_err(|error| CreateFailure { group_id, error })

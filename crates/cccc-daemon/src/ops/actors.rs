@@ -895,27 +895,19 @@ fn require_single_web_model_actor(
     actor_id: &str,
 ) -> Result<(), OpError> {
     let store = store(home)?;
-    for meta in store.list().map_err(OpError::io)? {
-        let group = store.load(&meta.group_id).map_err(OpError::io)?;
-        for actor in &group.actors {
-            if actor.runtime != ActorRuntime::WebModel
-                || (group.group_id == group_id && actor.id == actor_id)
-            {
-                continue;
-            }
-            let label = if actor.title.trim().is_empty() {
-                actor.id.as_str()
-            } else {
-                actor.title.as_str()
-            };
-            return Err(OpError::new(
-                "chatgpt_web_model_singleton",
-                format!(
-                    "ChatGPT Web Model is limited to one actor per CCCC instance (existing actor: {label} in group {}). Remove the existing ChatGPT Web Model actor before creating another.",
-                    group.group_id
-                ),
-            ));
-        }
+    let group = store.load(group_id).map_err(OpError::io)?;
+    if let Some(existing) = group
+        .actors
+        .iter()
+        .find(|actor| actor.runtime == ActorRuntime::WebModel && actor.id != actor_id)
+    {
+        return Err(OpError::new(
+            "chatgpt_web_model_singleton",
+            format!(
+                "Each group can have one ChatGPT Web Model actor; this group already has {}",
+                existing.id
+            ),
+        ));
     }
     Ok(())
 }

@@ -124,6 +124,20 @@ impl BrowserSurfaces {
             bail!("browser prompt is empty");
         }
         let page = self.page(key).await?;
+        let current_url = page.url().await?.unwrap_or_default();
+        if !target_url.is_empty() && !same_page(&current_url, target_url) {
+            let current = inspect_submission(&page, prompt, &submission_needles(prompt)).await?;
+            if current.running || current.stop_visible {
+                return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                    false,
+                    "none:chat_busy",
+                    "not_sent_chat_busy",
+                    "",
+                    &current,
+                    &current,
+                )));
+            }
+        }
         if has_chatgpt_conversation_route(target_url) {
             self.align_chatgpt_conversation_target(key, target_url, Duration::from_secs(5))
                 .await?;
@@ -149,8 +163,33 @@ impl BrowserSurfaces {
             )));
         }
 
+        if existing.running || existing.stop_visible {
+            self.record_page_state(key, &page).await;
+            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:chat_busy",
+                "not_sent_chat_busy",
+                "",
+                &existing,
+                &existing,
+            )));
+        }
         let composer = wait_for_composer(&page).await?;
         let staged = inspect_submission(&page, prompt, &needles).await?;
+        if staged.running
+            || staged.stop_visible
+            || (staged.composer_chars > 0 && !staged.composer_exact)
+        {
+            self.record_page_state(key, &page).await;
+            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:composer_occupied",
+                "not_sent_composer_occupied",
+                &composer.descriptor,
+                &staged,
+                &staged,
+            )));
+        }
         if !staged.composer_exact {
             focus_and_select_composer(&page).await?;
             page.execute(InsertTextParams::new(prompt))
@@ -951,20 +990,7 @@ pub(crate) fn has_chatgpt_conversation_route(value: &str) -> bool {
 }
 
 pub(crate) fn normalized_chatgpt_conversation_url(value: &str) -> Option<String> {
-    if !is_chatgpt_url(value) {
-        return None;
-    }
-    let mut url = reqwest::Url::parse(value).ok()?;
-    if url.scheme() != "https" {
-        return None;
-    }
-    let conversation_id = chatgpt_conversation_id(&url)?;
-    if provisional_conversation_id(&conversation_id) {
-        return None;
-    }
-    url.set_query(None);
-    url.set_fragment(None);
-    Some(url.to_string())
+    cccc_core::web_model_connectors::normalized_chatgpt_conversation_url(value)
 }
 
 pub(crate) fn conversation_target_matches(expected: &str, observed: &str) -> bool {

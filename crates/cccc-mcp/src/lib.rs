@@ -10,6 +10,7 @@ mod remote_messages;
 mod remote_tools;
 mod repo;
 mod router;
+mod session_gateway;
 mod tools;
 
 #[cfg(test)]
@@ -131,12 +132,12 @@ fn valid_error_code(code: &str) -> bool {
 }
 
 pub async fn run_stdio(home: HomeLayout) -> Result<()> {
-    let result = run_stdio_loop(&home).await;
+    let result = run_stdio_loop(&home, false).await;
     code_mode::shutdown(&home).await;
     result
 }
 
-async fn run_stdio_loop(home: &HomeLayout) -> Result<()> {
+async fn run_stdio_loop(home: &HomeLayout, gateway: bool) -> Result<()> {
     let client = DaemonClient::new(home.clone());
     let mut input = BufReader::new(tokio::io::stdin()).lines();
     let mut output = tokio::io::stdout();
@@ -159,7 +160,11 @@ async fn run_stdio_loop(home: &HomeLayout) -> Result<()> {
         if request.get("id").is_none() {
             continue;
         }
-        let response = handle(home, &client, &request, None).await;
+        let response = if gateway {
+            session_gateway::handle(home, &client, &request).await
+        } else {
+            handle(home, &client, &request, None).await
+        };
         write_response(&mut output, &response).await?;
     }
     Ok(())
@@ -174,6 +179,19 @@ pub async fn handle_request(home: &HomeLayout, request: &Value) -> Value {
     handle(home, &client, request, None).await
 }
 
+/// Serve session-bound calls from an explicitly trusted ChatGPT transport.
+pub async fn handle_request_for_gateway(home: &HomeLayout, request: &Value) -> Value {
+    let client = DaemonClient::new(home.clone());
+    session_gateway::handle(home, &client, request).await
+}
+
+/// Opt-in gateway; normal actor-scoped MCP processes retain their existing mode.
+pub async fn run_stdio_gateway(home: HomeLayout) -> Result<()> {
+    let result = run_stdio_loop(&home, true).await;
+    code_mode::shutdown(&home).await;
+    result
+}
+
 pub async fn handle_request_for_actor(
     home: &HomeLayout,
     request: &Value,
@@ -185,7 +203,11 @@ pub async fn handle_request_for_actor(
         home,
         &client,
         request,
-        Some(RequestContext { group_id, actor_id }),
+        Some(RequestContext {
+            group_id,
+            actor_id,
+            gateway_session: None,
+        }),
     )
     .await
 }
@@ -194,6 +216,8 @@ pub async fn handle_request_for_actor(
 pub(crate) struct RequestContext<'a> {
     group_id: &'a str,
     actor_id: &'a str,
+    // Present only after a trusted gateway request has resolved its conversation.
+    gateway_session: Option<&'a str>,
 }
 
 async fn handle(
@@ -292,7 +316,16 @@ pub(crate) async fn visible_tools_for_actor(
     group_id: &str,
     actor_id: &str,
 ) -> Vec<Value> {
-    visible_tools_with_context(home, client, Some(RequestContext { group_id, actor_id })).await
+    visible_tools_with_context(
+        home,
+        client,
+        Some(RequestContext {
+            group_id,
+            actor_id,
+            gateway_session: None,
+        }),
+    )
+    .await
 }
 
 async fn visible_tools_with_context(

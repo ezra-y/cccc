@@ -16,6 +16,11 @@ use super::BrowserSurfaces;
 
 impl BrowserSurfaces {
     pub async fn command(&self, key: &str, command: &Value) -> Result<()> {
+        let _web_model_guard = if key == super::SHARED_WEB_MODEL_KEY {
+            Some(self.web_model_operation.lock().await)
+        } else {
+            None
+        };
         let mut sessions = self.sessions.lock().await;
         let session = sessions
             .get_mut(key)

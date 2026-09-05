@@ -50,8 +50,19 @@ async fn ensure_running_actor(
 }
 
 async fn ensure_actor(state: &AppState, group_id: String, actor_id: String, event_trigger: bool) {
+    // Chat-first groups can dispatch locally before providing a return URL.
+    // Do not launch a browser or ask for sign-in until a return target is configured.
+    let Ok(target) = super::web_model_delivery_state::target(state, &group_id, &actor_id) else {
+        return;
+    };
+    if target["kind"] != "new_chat" && target["url"].as_str().is_none_or(str::is_empty) {
+        return;
+    }
     let session_key = super::web_model_browser::key(&group_id, &actor_id);
-    let surface = state.browser_surfaces.info(&session_key).await;
+    let surface = state
+        .browser_surfaces
+        .info(super::web_model_browser::surface_key())
+        .await;
     if surface["active"].as_bool().unwrap_or(false) {
         if event_trigger {
             super::web_model_delivery::ensure_worker(

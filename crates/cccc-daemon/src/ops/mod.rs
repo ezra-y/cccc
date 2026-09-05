@@ -70,6 +70,7 @@ mod task_list;
 mod terminal;
 mod terminal_history_source;
 mod terminal_text;
+mod web_model_chat_onboarding;
 mod working_state;
 #[cfg(test)]
 mod working_state_tests;
@@ -81,6 +82,7 @@ use crate::dispatch::{OpError, OpResult};
 
 pub fn handle(home: &HomeLayout, request: &DaemonRequest) -> Result<Option<OpResult>, OpError> {
     for handler in [
+        web_model_chat_onboarding::handle,
         group_creation::handle,
         groups::handle,
         hermes_runtime::handle,

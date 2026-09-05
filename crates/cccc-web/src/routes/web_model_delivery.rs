@@ -10,10 +10,10 @@ use crate::AppState;
 use crate::api::ApiError;
 use crate::browser_surface::{
     BOUND_CONVERSATION_ERROR_MARKER, PromptSubmissionOutcome, conversation_url_for_target,
-    is_chatgpt_url, stored_verified_submission_evidence,
+    stored_verified_submission_evidence,
 };
 
-use super::web_model_browser::key;
+use super::web_model_browser::{key, surface_key};
 use super::web_model_delivery_completion::{
     args, call as daemon_call, complete_args, reconcile, record_delivery,
 };
@@ -80,7 +80,7 @@ fn spawn_worker(state: AppState, group_id: String, actor_id: String) {
             let mut deferred_retries = 0_u32;
             let mut shutdown = state.shutdown.subscribe();
             loop {
-                let surface = state.browser_surfaces.info(&session_key).await;
+                let surface = state.browser_surfaces.info(surface_key()).await;
                 if !surface["active"].as_bool().unwrap_or(false) {
                     break;
                 }
@@ -228,7 +228,11 @@ pub(super) async fn deliver_pending(
     let Some(_delivery) = SessionGuard::acquire(&IN_FLIGHT, session_key.clone()) else {
         return Ok(DeliveryOutcome::Idle);
     };
-    deliver_once(state, group_id, actor_id, &session_key).await
+    let _operation = state.browser_surfaces.web_model_operation.lock().await;
+    if super::web_model_browser::another_chat_is_pending(state, group_id, actor_id)? {
+        return Ok(DeliveryOutcome::Idle);
+    }
+    deliver_once(state, group_id, actor_id, surface_key()).await
 }
 
 struct SessionGuard {
@@ -404,35 +408,6 @@ async fn deliver_once(
     {
         return resolve_pending_new_chat(state, group_id, actor_id, session_key, &target).await;
     }
-    if target["kind"] == "existing_chat" && is_chatgpt_url(target_url) {
-        if let Err(error) = state
-            .browser_surfaces
-            .align_chatgpt_conversation_target(
-                session_key,
-                target_url,
-                std::time::Duration::from_secs(5),
-            )
-            .await
-        {
-            let message = error.to_string();
-            update_target(
-                state,
-                group_id,
-                actor_id,
-                json!({
-                    "last_delivery_status":"failed",
-                    "last_submission_evidence":{
-                        "submitted":false,
-                        "submission_evidence":"bound_conversation_unavailable",
-                        "error":message.as_str()
-                    },
-                    "last_error":message.as_str()
-                }),
-            )?;
-            record_connector(state, group_id, actor_id, "failed", "", &message)?;
-            return Ok(DeliveryOutcome::Stopped);
-        }
-    }
     let wait = daemon_call(
         state,
         "runtime_wait_next_turn",
@@ -492,6 +467,10 @@ async fn deliver_once(
     let browser = match submitted {
         Ok(PromptSubmissionOutcome::Verified(browser)) => browser,
         Ok(PromptSubmissionOutcome::Deferred(browser)) => {
+            let busy = matches!(
+                browser["submission_evidence"].as_str(),
+                Some("not_sent_chat_busy" | "not_sent_composer_occupied")
+            );
             let message = "browser model is not ready for a safe prompt submission";
             update_target(
                 state,
@@ -500,7 +479,13 @@ async fn deliver_once(
                 json!({"last_delivery_status":"deferred","last_submission_evidence":browser,"last_error":message}),
             )?;
             record_connector(state, group_id, actor_id, "deferred", turn_id, message)?;
-            return Ok(DeliveryOutcome::Deferred(turn_id.to_owned()));
+            // A running Chat or an unsent human draft is not a failed connection.
+            // Reuse the existing idle cadence rather than exhausting technical retries.
+            return Ok(if busy {
+                DeliveryOutcome::Idle
+            } else {
+                DeliveryOutcome::Deferred(turn_id.to_owned())
+            });
         }
         Ok(PromptSubmissionOutcome::Ambiguous(browser)) => {
             let message = "browser submission was attempted but could not be verified; this message will not be redelivered automatically";

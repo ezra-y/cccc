@@ -260,6 +260,60 @@ pub fn load(home: &HomeLayout) -> io::Result<Vec<Value>> {
     })
 }
 
+/// Shared provisioning for the existing HTTP connector and Chat-first gateway.
+pub fn create(
+    home: &HomeLayout,
+    group_id: &str,
+    actor_id: &str,
+    provider: &str,
+    label: &str,
+) -> io::Result<(Value, Vec<String>)> {
+    let group = crate::GroupStore::new(home.clone())?.load(group_id)?;
+    if !crate::actors::find(&group, actor_id)
+        .is_some_and(|actor| actor.runtime == cccc_contracts::ActorRuntime::WebModel)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "connector_actor_unavailable",
+        ));
+    }
+    let now = cccc_contracts::utc_now();
+    let connector = json!({
+        "connector_id":format!("wmc_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]),
+        "kind":"web_model_connector","group_id":group_id,"actor_id":actor_id,
+        "provider":if provider.trim().is_empty(){"chatgpt"}else{provider.trim()},"label":label,
+        "secret":format!("wmcs_{}{}",uuid::Uuid::new_v4().simple(),uuid::Uuid::new_v4().simple()),
+        "created_at":now,"updated_at":now,"revoked":false
+    });
+    let replaced = replace_active(home, &connector)?;
+    Ok((connector, replaced))
+}
+
+/// A return target must be a stable ChatGPT conversation, not a provisional tab.
+pub fn normalized_chatgpt_conversation_url(value: &str) -> Option<String> {
+    let mut url = url::Url::parse(value.trim()).ok()?;
+    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    if url.scheme() != "https"
+        || !(host == "chatgpt.com" || host.ends_with(".chatgpt.com"))
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+    {
+        return None;
+    }
+    let parts = url.path_segments()?.collect::<Vec<_>>();
+    let id = parts
+        .windows(2)
+        .find_map(|pair| (pair[0] == "c" && !pair[1].is_empty()).then_some(pair[1]))?;
+    let upper = id.to_ascii_uppercase();
+    if upper.starts_with("WEB:") || upper.starts_with("WEB%3A") {
+        return None;
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(url.to_string())
+}
+
 pub fn replace_active(home: &HomeLayout, connector: &Value) -> io::Result<Vec<String>> {
     update(home, |items| {
         let id = connector["connector_id"].as_str().ok_or_else(|| {
@@ -494,6 +548,10 @@ pub fn bind_session(
         let item = items
             .get_mut(connector_id)
             .expect("connector validated under lock");
+        let old_hash = item["session_hash"].as_str().unwrap_or_default();
+        if !old_hash.is_empty() && old_hash != session_hash {
+            item["previous_session_hash"] = json!(old_hash);
+        }
         item["session_hash"] = json!(session_hash);
         item["session_bound_at"] = json!(now.to_rfc3339());
         item["binding_code_hash"] = json!("");
@@ -505,6 +563,99 @@ pub fn bind_session(
             "group_id":item["group_id"],
             "actor_id":item["actor_id"]
         }))
+    })
+}
+
+// The existing return target is tagged with its bound conversation. Rebinding
+// changes one connector atomically; old target bytes remain but cannot be used.
+fn target_matches_binding(connector: Option<&Value>, target: &Value) -> bool {
+    let tagged = target["bound_session_hash"]
+        .as_str()
+        .filter(|s| !s.is_empty());
+    match connector {
+        Some(connector) => {
+            let current = connector["session_hash"].as_str().filter(|s| !s.is_empty());
+            if let Some(tagged) = tagged {
+                return current == Some(tagged);
+            }
+            connector["previous_session_hash"]
+                .as_str()
+                .is_none_or(str::is_empty)
+        }
+        None => tagged.is_none(),
+    }
+}
+
+pub fn browser_target(home: &HomeLayout, group_id: &str, actor_id: &str) -> io::Result<Value> {
+    migrate_settings_store(home)?;
+    fs::with_exclusive_lock(&lock_path(home), || {
+        let connectors = read_unlocked(&store_path(home))?;
+        let connector = connectors.values().find(|item| {
+            item["group_id"] == group_id && item["actor_id"] == actor_id && item["revoked"] != true
+        });
+        let store = crate::GroupStore::new(home.clone())?;
+        let targets =
+            crate::integration_state::group_get(&store, group_id, "web_model_browser_targets")?;
+        let target = targets.get(actor_id).cloned().unwrap_or_else(|| json!({}));
+        Ok(if target_matches_binding(connector, &target) {
+            target
+        } else {
+            json!({})
+        })
+    })
+}
+
+/// Explicit target selection uses the same short lock as rebinding, avoiding a
+/// split-file transaction or timestamps as a conversation-ownership signal.
+pub fn save_browser_target(
+    home: &HomeLayout,
+    group_id: &str,
+    actor_id: &str,
+    target: Option<Value>,
+) -> io::Result<()> {
+    migrate_settings_store(home)?;
+    fs::with_exclusive_lock(&lock_path(home), || {
+        let connectors = read_unlocked(&store_path(home))?;
+        let connector = connectors.values().find(|item| {
+            item["group_id"] == group_id && item["actor_id"] == actor_id && item["revoked"] != true
+        });
+        let mut target = target;
+        if let Some(target) = target.as_mut() {
+            if !target.is_object() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid browser target",
+                ));
+            }
+            target
+                .as_object_mut()
+                .expect("object checked")
+                .remove("bound_session_hash");
+            if let Some(hash) = connector
+                .and_then(|item| item["session_hash"].as_str())
+                .filter(|s| !s.is_empty())
+            {
+                target["bound_session_hash"] = json!(hash);
+            }
+        }
+        let store = crate::GroupStore::new(home.clone())?;
+        crate::integration_state::group_update(
+            &store,
+            group_id,
+            "web_model_browser_targets",
+            |targets| {
+                if !targets.is_object() {
+                    *targets = json!({});
+                }
+                let targets = targets.as_object_mut().expect("object initialized");
+                if let Some(target) = target {
+                    targets.insert(actor_id.to_owned(), target);
+                } else {
+                    targets.remove(actor_id);
+                }
+                Ok(())
+            },
+        )
     })
 }
 
@@ -961,5 +1112,60 @@ mod tests {
                 .is_none()
         );
         bind_session(&home, "route-a", &pending, "new-chat").expect("fixture operation succeeds");
+    }
+    #[test]
+    fn replacement_binding_never_sends_new_chats_reports_to_the_previous_chat() {
+        let (_temp, home, groups) = session_fixture();
+        let store = crate::GroupStore::new(home.clone()).expect("store");
+        bind_session(&home, "route-a", &issue(&home, "route-a"), "old-chat").expect("old binding");
+        crate::integration_state::group_update(&store,&groups[0],"web_model_browser_targets",|targets|{
+            *targets=json!({"web-lead":{"kind":"existing_chat","url":"https://chatgpt.com/c/old-chat"}});Ok(())
+        }).expect("old callback");
+        let replacement = issue(&home, "route-a");
+        assert!(bind_session(&home, "route-a", "wrong-code", "new-chat").is_err());
+        assert_eq!(
+            store.load(&groups[0]).expect("group").extra["web_model_browser_targets"]["web-lead"]["url"],
+            "https://chatgpt.com/c/old-chat"
+        );
+        bind_session(&home, "route-a", &replacement, "new-chat").expect("replace binding");
+        let group = store.load(&groups[0]).expect("group");
+        assert_eq!(
+            group.extra["web_model_browser_targets"]["web-lead"]["url"],
+            "https://chatgpt.com/c/old-chat"
+        );
+        assert!(
+            browser_target(&home, &groups[0], "web-lead")
+                .expect("effective target")
+                .get("url")
+                .is_none(),
+            "new Chat can use the old Chat's callback"
+        );
+        save_browser_target(
+            &home,
+            &groups[0],
+            "web-lead",
+            Some(json!({"kind":"existing_chat","url":"https://chatgpt.com/c/new-chat"})),
+        )
+        .expect("select new callback");
+        assert_eq!(
+            browser_target(&home, &groups[0], "web-lead").expect("target")["url"],
+            "https://chatgpt.com/c/new-chat"
+        );
+        bind_session(&home, "route-a", &issue(&home, "route-a"), "new-chat")
+            .expect("same-owner rebind");
+        assert_eq!(
+            browser_target(&home, &groups[0], "web-lead").expect("target")["url"],
+            "https://chatgpt.com/c/new-chat"
+        );
+        assert!(
+            find_session(&home, "old-chat")
+                .expect("old lookup")
+                .is_none()
+        );
+        assert!(
+            find_session(&home, "new-chat")
+                .expect("new lookup")
+                .is_some()
+        );
     }
 }

@@ -7,7 +7,7 @@ use cccc_contracts::{ActorRuntime, utc_now};
 use cccc_core::GroupStore;
 use cccc_core::integration_state;
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -87,6 +87,12 @@ pub(super) async fn ensure_open_for_actor(
     height: u32,
 ) -> Result<Value, ApiError> {
     validate_actor(state, group_id, actor_id)?;
+    let _operation = state.browser_surfaces.web_model_operation.lock().await;
+    if another_chat_is_pending(state, group_id, actor_id)? {
+        return Err(ApiError::bad(
+            "Another group's newly submitted chat is still acquiring its conversation URL; wait for it before navigating the shared browser",
+        ));
+    }
     let provider = super::web_model_connector_store::for_actor(state, group_id, actor_id)
         .and_then(|item| item["provider"].as_str().map(str::to_owned))
         .unwrap_or_else(|| "chatgpt".into());
@@ -95,17 +101,17 @@ pub(super) async fn ensure_open_for_actor(
     let profile = browser_profile_path(state.home.root(), group_id, actor_id)?;
     state
         .browser_surfaces
-        .ensure_open_system(&key(group_id, actor_id), &profile, &open_url, width, height)
+        .ensure_open_system(surface_key(), &profile, &open_url, width, height)
         .await
         .map_err(|error| ApiError::bad(format!("{error:#}")))?;
-    let session_key = key(group_id, actor_id);
+    let session_key = surface_key();
     match target["kind"].as_str() {
         Some("existing_chat") if is_chatgpt_url(&open_url) => {
             if normalized_chatgpt_conversation_url(&open_url).is_some()
                 && let Err(error) = state
                     .browser_surfaces
                     .align_chatgpt_conversation_target(
-                        &session_key,
+                        session_key,
                         &open_url,
                         std::time::Duration::from_secs(5),
                     )
@@ -117,7 +123,7 @@ pub(super) async fn ensure_open_for_actor(
         Some("existing_chat" | "new_chat") => {
             if let Err(error) = state
                 .browser_surfaces
-                .navigate_to_url(&session_key, &open_url)
+                .navigate_to_url(session_key, &open_url)
                 .await
             {
                 tracing::warn!(group_id, actor_id, %error, "saved Web-model target could not be opened");
@@ -125,30 +131,29 @@ pub(super) async fn ensure_open_for_actor(
         }
         _ => {}
     }
-    Ok(state.browser_surfaces.info(&session_key).await)
+    Ok(state.browser_surfaces.info(session_key).await)
 }
 
 async fn close(State(state): State<AppState>, Json(body): Json<Value>) -> ApiResult {
+    let _operation = state.browser_surfaces.web_model_operation.lock().await;
     let group_id = required(&body, "group_id")?;
     let actor_id = required(&body, "actor_id")?;
     validate_actor(&state, &group_id, &actor_id)?;
     state
         .browser_surfaces
-        .close(&key(&group_id, &actor_id))
+        .close(surface_key())
         .await
         .map_err(|error| ApiError::bad(error.to_string()))?;
     payload(&state, &group_id, &actor_id, false).await
 }
 
 async fn bind_current(State(state): State<AppState>, Json(body): Json<Value>) -> ApiResult {
+    let _operation = state.browser_surfaces.web_model_operation.lock().await;
     let group_id = required(&body, "group_id")?;
     let actor_id = required(&body, "actor_id")?;
     validate_actor(&state, &group_id, &actor_id)?;
     let clear = body.get("clear").and_then(Value::as_bool).unwrap_or(false);
-    let current = state
-        .browser_surfaces
-        .info(&key(&group_id, &actor_id))
-        .await;
+    let current = state.browser_surfaces.info(surface_key()).await;
     let mut url = body
         .get("conversation_url")
         .and_then(Value::as_str)
@@ -156,6 +161,11 @@ async fn bind_current(State(state): State<AppState>, Json(body): Json<Value>) ->
         .trim()
         .to_owned();
     if url.is_empty() {
+        if another_chat_is_pending(&state, &group_id, &actor_id)? {
+            return Err(ApiError::bad(
+                "The shared browser is still assigning another group's chat URL; paste this group's existing chat URL explicitly",
+            ));
+        }
         url = current["url"].as_str().unwrap_or("").to_owned();
     }
     let new_chat = body
@@ -182,16 +192,12 @@ async fn bind_current(State(state): State<AppState>, Json(body): Json<Value>) ->
         }
         json!({"state":"bound_existing_chat","kind":"existing_chat","url":url,"saved_at":utc_now(),"next_delivery":"existing_chat"})
     };
-    let store = GroupStore::new(state.home.clone()).map_err(io_error)?;
-    integration_state::group_update(&store, &group_id, TARGETS_KEY, |value| {
-        let targets = ensure_object(value);
-        if clear {
-            targets.remove(&actor_id);
-        } else {
-            targets.insert(actor_id.clone(), target);
-        }
-        Ok(())
-    })
+    cccc_core::web_model_connectors::save_browser_target(
+        &state.home,
+        &group_id,
+        &actor_id,
+        (!clear).then_some(target),
+    )
     .map_err(io_error)?;
     if !clear && current["active"].as_bool().unwrap_or(false) {
         super::web_model_delivery::ensure_worker(state.clone(), group_id.clone(), actor_id.clone())
@@ -228,7 +234,7 @@ async fn upgrade(
     let group_id = required_identifier(&query.group_id, "group_id")?;
     let actor_id = required_identifier(&query.actor_id, "actor_id")?;
     validate_actor(&state, group_id, actor_id)?;
-    let session_key = key(group_id, actor_id);
+    let session_key = surface_key();
     let vnc = query.mode.trim().eq_ignore_ascii_case("vnc");
     let viewer_mode = query.viewer_mode;
     if state.web_mode.is_read_only() {
@@ -246,7 +252,7 @@ async fn upgrade(
             crate::browser_surface::serve_vnc_socket(
                 socket,
                 &state.browser_surfaces,
-                &session_key,
+                session_key,
                 state.shutdown.subscribe(),
             )
             .await;
@@ -254,7 +260,7 @@ async fn upgrade(
             crate::browser_surface::serve_socket(
                 socket,
                 &state.browser_surfaces,
-                &session_key,
+                session_key,
                 &viewer_mode,
                 state.shutdown.subscribe(),
             )
@@ -264,11 +270,13 @@ async fn upgrade(
 }
 
 async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool) -> ApiResult {
-    let session_key = key(group_id, actor_id);
-    let mut surface = state.browser_surfaces.info(&session_key).await;
+    let session_key = surface_key();
+    let mut surface = state.browser_surfaces.info(session_key).await;
     let store = GroupStore::new(state.home.clone()).map_err(io_error)?;
-    let targets = integration_state::group_get(&store, group_id, TARGETS_KEY).map_err(io_error)?;
-    let mut target = targets.get(actor_id).cloned().unwrap_or_else(|| json!({}));
+    let mut target = super::web_model_delivery_state::target(state, group_id, actor_id)?;
+    if let Some(target) = target.as_object_mut() {
+        target.remove("bound_session_hash");
+    }
     let preferences = integration_state::group_get(&store, group_id, DELIVERY_PREFERENCES_KEY)
         .map_err(io_error)?;
     let stored_preference = preferences
@@ -288,7 +296,7 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
     let readiness = if active && inspect {
         let readiness = state
             .browser_surfaces
-            .prompt_readiness(&session_key)
+            .prompt_readiness(session_key)
             .await
             .unwrap_or_else(|error| {
                 json!({
@@ -298,7 +306,7 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
                     "message":error.to_string()
                 })
             });
-        surface = state.browser_surfaces.info(&session_key).await;
+        surface = state.browser_surfaces.info(session_key).await;
         readiness
     } else if active {
         cached_readiness(&surface)
@@ -684,6 +692,52 @@ fn browser_open_url(target: &Value, provider_url: &str) -> String {
     }
 }
 
+pub(super) fn surface_key() -> &'static str {
+    crate::browser_surface::SHARED_WEB_MODEL_KEY
+}
+
+// Reuse persisted delivery facts as the owner fence, including after Web restarts.
+pub(super) fn another_chat_is_pending(
+    state: &AppState,
+    group_id: &str,
+    actor_id: &str,
+) -> Result<bool, ApiError> {
+    let store = GroupStore::new(state.home.clone()).map_err(io_error)?;
+    for meta in store.list().map_err(io_error)? {
+        let group = store.load(&meta.group_id).map_err(io_error)?;
+        let Some(targets) = group.extra.get(TARGETS_KEY).and_then(Value::as_object) else {
+            continue;
+        };
+        for (actor, _) in targets {
+            let target = cccc_core::web_model_connectors::browser_target(
+                &state.home,
+                &group.group_id,
+                actor,
+            )
+            .map_err(io_error)?;
+            if group.group_id == group_id && actor == actor_id {
+                continue;
+            }
+            if target["kind"] == "new_chat"
+                && matches!(
+                    target["last_delivery_status"].as_str(),
+                    Some(
+                        "submitting"
+                            | "submitted"
+                            | "pending_new_chat_bind"
+                            | "submission_ambiguous"
+                            | "completion_ambiguous"
+                            | "submission_ambiguous_completion_pending"
+                    )
+                )
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 pub(super) fn key(group_id: &str, actor_id: &str) -> String {
     format!("web-model::{group_id}::{actor_id}")
 }
@@ -715,13 +769,6 @@ fn dimension(body: &Value, key: &str, default: u32, min: u32, max: u32) -> u32 {
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(default)
         .clamp(min, max)
-}
-
-fn ensure_object(value: &mut Value) -> &mut Map<String, Value> {
-    if !value.is_object() {
-        *value = json!({});
-    }
-    value.as_object_mut().expect("object initialized")
 }
 
 fn io_error(error: io::Error) -> ApiError {

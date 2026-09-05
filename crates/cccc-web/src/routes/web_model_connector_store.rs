@@ -10,10 +10,6 @@ pub(super) fn load(state: &AppState) -> Result<Vec<Value>, ApiError> {
     web_model_connectors::load(&state.home).map_err(io_error)
 }
 
-pub(super) fn replace_active(state: &AppState, connector: &Value) -> Result<Vec<String>, ApiError> {
-    web_model_connectors::replace_active(&state.home, connector).map_err(io_error)
-}
-
 pub(super) fn revoke(state: &AppState, connector_id: &str) -> Result<bool, ApiError> {
     web_model_connectors::revoke(&state.home, connector_id).map_err(io_error)
 }

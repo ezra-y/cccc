@@ -704,3 +704,73 @@ fn classifies_only_group_owned_browser_sessions() {
     );
     assert_eq!(session_actor("g_one::presentation"), None);
 }
+
+#[tokio::test]
+async fn shared_web_model_operations_preserve_busy_drafts_and_serialize_manual_navigation() {
+    require_chrome!();
+    let (url,server)=local_page(r#"<!doctype html><html><body><form><textarea id="prompt-textarea" placeholder="Message">my unsent draft</textarea><button type="button" aria-label="Stop streaming">Stop</button></form></body></html>"#).await;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manager = std::sync::Arc::new(BrowserSurfaces::default());
+    let profile = temp.path().join("profile");
+    let (first, second) = tokio::join!(
+        manager.ensure_open(SHARED_WEB_MODEL_KEY, &profile, &url, 800, 600),
+        manager.ensure_open(SHARED_WEB_MODEL_KEY, &profile, &url, 800, 600),
+    );
+    assert_eq!(
+        first.expect("first open")["started_at"],
+        second.expect("reuse")["started_at"]
+    );
+    let page = manager
+        .sessions
+        .lock()
+        .await
+        .get(SHARED_WEB_MODEL_KEY)
+        .expect("shared session")
+        .page
+        .clone();
+    let result = manager
+        .submit_prompt_with_attachment(
+            SHARED_WEB_MODEL_KEY,
+            &url,
+            "member report",
+            None,
+            "test-busy",
+        )
+        .await
+        .expect("submission result");
+    assert!(matches!(
+        result,
+        prompt_submission::PromptSubmissionOutcome::Deferred(_)
+    ));
+    let draft: String = page
+        .evaluate("document.querySelector('textarea').value")
+        .await
+        .expect("read composer")
+        .into_value()
+        .expect("composer string");
+    assert_eq!(
+        draft, "my unsent draft",
+        "busy submission changed the user's draft"
+    );
+    let guard = manager.web_model_operation.lock().await;
+    let other = std::sync::Arc::clone(&manager);
+    let navigation = tokio::spawn(async move {
+        other
+            .command(SHARED_WEB_MODEL_KEY, &json!({"t":"text","text":"later"}))
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !navigation.is_finished(),
+        "manual interaction bypassed an in-flight browser transaction"
+    );
+    drop(guard);
+    navigation.await.expect("join").expect("manual interaction");
+    assert_eq!(manager.sessions.lock().await.len(), 1);
+    manager
+        .close(SHARED_WEB_MODEL_KEY)
+        .await
+        .expect("close shared browser");
+    server.abort();
+    eprintln!("shared browser launched, busy draft preserved, manual command serialized");
+}

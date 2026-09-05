@@ -55,7 +55,13 @@ async fn main() -> Result<()> {
             };
             launch(home, cli.host, cli.port, mode).await
         }
-        Some(CommandKind::Mcp) => cccc_mcp::run_stdio(home).await,
+        Some(CommandKind::Mcp { gateway }) => {
+            if gateway {
+                cccc_mcp::run_stdio_gateway(home).await
+            } else {
+                cccc_mcp::run_stdio(home).await
+            }
+        }
         Some(CommandKind::Version) => {
             println!("cccc {PRODUCT_VERSION}");
             Ok(())

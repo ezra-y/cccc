@@ -11,6 +11,8 @@ pub(super) fn is_global_write(request: &DaemonRequest) -> bool {
             "shutdown"
                 | "group_create"
                 | "group_create_with_scope"
+                | "web_model_chat_create"
+                | "web_model_chat_bind"
                 | "group_delete"
                 | "group_import"
                 | "group_update"

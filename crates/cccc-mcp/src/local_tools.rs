@@ -12,6 +12,7 @@ pub async fn call(
     client: &DaemonClient,
     name: &str,
     args: Map<String, Value>,
+    context: Option<crate::RequestContext<'_>>,
 ) -> Result<Value, ToolCallError> {
     let root = scope(client, &args).await?;
     let payload = match name {
@@ -20,8 +21,8 @@ pub async fn call(
         "cccc_git" => git(&root, &args).await?,
         "cccc_exec_command" => crate::local_sessions::start(&root, &args)?,
         "cccc_write_stdin" => crate::local_sessions::write(&args)?,
-        "cccc_code_exec" => crate::code_mode::start(home, client, &root, &args).await?,
-        "cccc_code_wait" => crate::code_mode::wait(home, client, &args).await?,
+        "cccc_code_exec" => crate::code_mode::start(home, client, &root, &args, context).await?,
+        "cccc_code_wait" => crate::code_mode::wait(home, client, &args, context).await?,
         "cccc_apply_patch" => apply_patch(&root, &args).await?,
         "cccc_file" => file(home, client, &root, &args).await?,
         _ => return Err(format!("unsupported local tool: {name}").into()),
