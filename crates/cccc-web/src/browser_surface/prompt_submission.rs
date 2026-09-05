@@ -12,7 +12,6 @@ use super::BrowserSurfaces;
 use super::navigation::goto_dom_content_loaded;
 
 const COMPOSER_SELECTOR: &str = "[data-cccc-web-model-composer=\"cccc-web-model-composer\"]";
-const SEND_SELECTOR: &str = "[data-cccc-web-model-send=\"cccc-web-model-send\"]";
 const COMPOSER_TIMEOUT: Duration = Duration::from_secs(30);
 const PROMPT_STAGING_TIMEOUT: Duration = Duration::from_secs(3);
 const SEND_CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -245,31 +244,6 @@ impl BrowserSurfaces {
 
         let readiness = wait_for_send_control(&page).await?;
         match readiness {
-            SendReadiness::Ready(candidate) => {
-                let action = candidate.descriptor;
-                let click = match page.find_element(SEND_SELECTOR).await {
-                    Ok(button) => button.click().await.map(|_| ()),
-                    Err(error) => Err(error),
-                };
-                let action = if click.is_ok() {
-                    action
-                } else {
-                    format!("{action}:click_dispatch_unknown")
-                };
-                Ok(self
-                    .verify_attempt(
-                        key,
-                        &page,
-                        SubmissionAttempt {
-                            prompt,
-                            needles: &needles,
-                            input: &composer.descriptor,
-                            action: &action,
-                            baseline: &baseline,
-                        },
-                    )
-                    .await)
-            }
             SendReadiness::Deferred(probe) => Ok(self
                 .classify_deferred_submission(
                     key,
@@ -284,7 +258,7 @@ impl BrowserSurfaces {
                     "send_control_deferred",
                 )
                 .await),
-            SendReadiness::Missing(probe) => {
+            SendReadiness::Ready(probe) | SendReadiness::Missing(probe) => {
                 let request_submit = request_submit(&page).await;
                 match request_submit {
                     Ok(result) if result.unsafe_state => Ok(self
@@ -916,11 +890,16 @@ async fn wait_for_send_control(page: &Page) -> Result<SendReadiness> {
 }
 
 async fn request_submit(page: &Page) -> Result<RequestSubmitResult> {
-    page.evaluate(format!("({REQUEST_SUBMIT_SCRIPT})()"))
-        .await
-        .context("request browser composer submission")?
-        .into_value::<RequestSubmitResult>()
-        .context("decode browser composer requestSubmit result")
+    // Recheck the actual control and invoke it in the same browser task. Native
+    // coordinate clicks wait on IntersectionObserver, which may stall in a
+    // background tab. A dispatch error remains ambiguous; never click twice.
+    page.evaluate(format!(
+        "({REQUEST_SUBMIT_SCRIPT})(({SELECT_SEND_CONTROL_SCRIPT})())"
+    ))
+    .await
+    .context("request browser composer submission")?
+    .into_value::<RequestSubmitResult>()
+    .context("decode browser composer requestSubmit result")
 }
 
 async fn inspect_submission(
@@ -1283,7 +1262,20 @@ const SELECT_SEND_CONTROL_SCRIPT: &str = r#"() => {
     };
 }"#;
 
-const REQUEST_SUBMIT_SCRIPT: &str = r#"() => {
+const REQUEST_SUBMIT_SCRIPT: &str = r#"probe => {
+    if (probe.running || probe.stop_visible) {
+        return { action: '', invoked: false, unsafe_state: true, error: '' };
+    }
+    const selected = probe.selector ? document.querySelector(probe.selector) : null;
+    if (selected) {
+        const action = `dom.click:${probe.descriptor}`;
+        try {
+            selected.click();
+            return { action, invoked: true, unsafe_state: false, error: '' };
+        } catch (error) {
+            return { action, invoked: true, unsafe_state: false, error: String(error || '') };
+        }
+    }
     const input = document.querySelector('[data-cccc-web-model-composer="cccc-web-model-composer"]');
     const form = input?.closest('form') || null;
     if (!form || typeof form.requestSubmit !== 'function') {

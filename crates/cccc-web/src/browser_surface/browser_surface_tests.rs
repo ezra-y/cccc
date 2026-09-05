@@ -845,3 +845,98 @@ async fn cross_chat_delivery_does_not_navigate_away_from_a_draft() {
     destination_server.abort();
     outcome.expect("cross-chat assertions");
 }
+
+#[tokio::test]
+async fn submission_does_not_wait_for_background_intersection_observers() {
+    require_chrome!();
+    let (url,server)=local_page(r#"<!doctype html><html><body><form onsubmit="event.preventDefault();window.sent=(window.sent||0)+1;const e=document.createElement('div');e.dataset.messageAuthorRole='user';e.textContent=document.querySelector('textarea').value;document.body.append(e);document.querySelector('textarea').value=''"><textarea id="prompt-textarea" style="width:500px;height:100px"></textarea><button id="composer-submit-button" type="submit" aria-label="Send prompt">Send</button></form></body></html>"#).await;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manager = BrowserSurfaces::default();
+    manager
+        .open(
+            "background-submit",
+            &temp.path().join("profile"),
+            &url,
+            800,
+            600,
+        )
+        .await
+        .expect("browser");
+    let page = manager
+        .sessions
+        .lock()
+        .await
+        .get("background-submit")
+        .expect("session")
+        .page
+        .clone();
+    // An inactive tab need not deliver IntersectionObserver callbacks. Model
+    // that condition deterministically; never bring a user's window to front.
+    page.evaluate("window.IntersectionObserver=class{observe(){} unobserve(){} disconnect(){}};")
+        .await
+        .expect("suspend observer fixture");
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(6),
+        manager.submit_prompt_with_attachment(
+            "background-submit",
+            &url,
+            "BACKGROUND_REPORT",
+            None,
+            "background-once",
+        ),
+    )
+    .await;
+    let count: u64 = page
+        .evaluate("window.sent||0")
+        .await
+        .expect("send count")
+        .into_value()
+        .expect("count");
+    let repeated = if outcome.as_ref().is_ok_and(|result| {
+        matches!(
+            result,
+            Ok(prompt_submission::PromptSubmissionOutcome::Verified(_))
+        )
+    }) {
+        Some(
+            manager
+                .submit_prompt_with_attachment(
+                    "background-submit",
+                    &url,
+                    "BACKGROUND_REPORT",
+                    None,
+                    "background-once",
+                )
+                .await,
+        )
+    } else {
+        None
+    };
+    let final_count: u64 = page
+        .evaluate("window.sent||0")
+        .await
+        .expect("final count")
+        .into_value()
+        .expect("count");
+    let _ = manager.close("background-submit").await;
+    server.abort();
+    assert!(
+        matches!(
+            outcome,
+            Ok(Ok(prompt_submission::PromptSubmissionOutcome::Verified(_)))
+        ),
+        "background submission waited for a visual observer instead of invoking the checked Send control"
+    );
+    assert_eq!(count, 1);
+    assert!(matches!(
+        repeated,
+        Some(Ok(prompt_submission::PromptSubmissionOutcome::Verified(_)))
+    ));
+    assert_eq!(
+        final_count, 1,
+        "an existing message echo was sent a second time"
+    );
+    eprintln!(
+        "BACKGROUND_SUBMISSION: suspended visual observer, one verified send, duplicate observation does not resend"
+    );
+}
