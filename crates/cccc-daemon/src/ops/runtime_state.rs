@@ -614,6 +614,7 @@ fn record_browser_delivery(home: &HomeLayout, request: &DaemonRequest) -> OpResu
         "submitting" | "pending" | "" => None,
         _ => None,
     };
+    let mut release_failed_turn = browser_delivery["state"] == "failed";
     if let Some((runtime_state, outcome)) = runtime_outcome {
         for source_event_id in &event_ids {
             let latest = crate::ops::runtime_delivery::latest_state(
@@ -622,6 +623,15 @@ fn record_browser_delivery(home: &HomeLayout, request: &DaemonRequest) -> OpResu
                 &actor_id,
                 source_event_id,
             )?;
+            // A late observation cannot turn a delivered or uncertain source
+            // back into retryable work. Stronger verified evidence may still
+            // resolve an ambiguous handoff to accepted.
+            if latest.as_ref().is_some_and(|(state, _)| {
+                state == "accepted" || (state == "ambiguous" && runtime_state == "failed")
+            }) {
+                release_failed_turn = false;
+                continue;
+            }
             if latest
                 .as_ref()
                 .is_some_and(|(state, _)| state == runtime_state)
@@ -639,7 +649,7 @@ fn record_browser_delivery(home: &HomeLayout, request: &DaemonRequest) -> OpResu
             )?;
         }
     }
-    if browser_delivery["state"] == "failed" {
+    if release_failed_turn {
         // No message crossed the browser boundary. Release only this exact
         // reservation; completion remains reserved for accepted/ambiguous work.
         let active = actor_state(home, &group.group_id, &actor_id)?;
