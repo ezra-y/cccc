@@ -1920,3 +1920,20 @@ input.border-none {
   outline: none !important;
   box-shadow: none !important;
 }
+
+/* Temporary owner review: only explicit, smallest changed regions are annotated.
+   Existing children of a newly added region do not get duplicate outlines. */
+[data-t05-review] {
+  outline: 2px solid #e25d5d;
+  outline-offset: 2px;
+  box-shadow: inset 0 0 0 9999px rgb(226 93 93 / 0.055);
+}
+[data-t05-review]:focus-visible {
+  outline-width: 3px;
+}
+/* This one menu is deliberately opaque. The shared glass modal remains unchanged. */
+.t05-members-menu.glass-modal {
+  background: var(--color-bg-secondary);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}

@@ -77,3 +77,63 @@ async fn local_binding_endpoint_is_group_specific_authenticated_and_redacts_iden
         .expect("read-only response");
     assert_eq!(exhibit.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn shared_browser_status_is_available_without_groups_and_has_no_member_state() {
+    let temp = tempfile::tempdir().expect("temp");
+    let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+    let app = auth_support::authenticated_app(home.clone());
+    let req = || {
+        Request::get("/api/v1/web-model/shared-browser?inspect=false")
+            .body(Body::empty())
+            .expect("request")
+    };
+    let response = app.clone().oneshot(req()).await.expect("shared info");
+    assert_eq!(response.status(), StatusCode::OK);
+    let value = json_body(response).await;
+    let shared = &value["result"]["browser_session"];
+    assert_eq!(shared["scope"], "shared");
+    assert_eq!(shared["active"], false);
+    for field in [
+        "group_id",
+        "actor_id",
+        "conversation_url",
+        "delivery_target",
+        "last_delivery_status",
+    ] {
+        assert!(
+            shared.get(field).is_none(),
+            "member state leaked to shared login: {field}"
+        );
+    }
+    assert!(
+        GroupStore::new(home.clone())
+            .expect("store")
+            .list()
+            .expect("groups")
+            .is_empty()
+    );
+    let no_auth = cccc_web::app(home.clone())
+        .oneshot(req())
+        .await
+        .expect("unauthorized");
+    assert_eq!(no_auth.status(), StatusCode::UNAUTHORIZED);
+    let closed = app
+        .oneshot(
+            Request::post("/api/v1/web-model/shared-browser/close")
+                .body(Body::empty())
+                .expect("close"),
+        )
+        .await
+        .expect("close response");
+    assert_eq!(closed.status(), StatusCode::OK);
+    let readonly = auth_support::authenticated_app_with_mode(home, cccc_web::WebMode::Exhibit)
+        .oneshot(
+            Request::post("/api/v1/web-model/shared-browser/close")
+                .body(Body::empty())
+                .expect("close"),
+        )
+        .await
+        .expect("readonly");
+    assert_eq!(readonly.status(), StatusCode::FORBIDDEN);
+}

@@ -660,3 +660,69 @@ async fn concurrent_gateways_keep_ten_groups_separate_and_create_once() {
         .expect("bounded concurrency test")
         .expect("concurrency assertions");
 }
+
+#[tokio::test]
+async fn bound_web_peer_keeps_native_role_permissions_and_updates_only_its_target() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+    home.initialize().expect("initialize");
+    let daemon_home = home.clone();
+    let daemon_task = tokio::spawn(async move { cccc_daemon::run(daemon_home).await });
+    let client = DaemonClient::new(home.clone());
+    for _ in 0..100 {
+        if client
+            .call(&DaemonRequest {
+                v: 1,
+                op: "ping".into(),
+                args: Map::new(),
+            })
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let work_home = home.clone();
+    let work_client = client.clone();
+    let project = temp.path().join("project");
+    std::fs::create_dir(&project).expect("project");
+    let result=tokio::spawn(async move {
+        let created=daemon(&work_client,"group_create_with_scope",json!({"path":project,"title":"peer test","by":"user","set_active":false})).await;
+        let gid=created["group_id"].as_str().expect("group").to_owned();
+        daemon(&work_client,"actor_add",json!({"group_id":gid,"actor_id":"local-lead","runtime":"custom","command":["cat"],"by":"user"})).await;
+        daemon(&work_client,"actor_add",json!({"group_id":gid,"actor_id":"web-peer","runtime":"web_model","by":"user"})).await;
+        let (entry,_)=web_model_connectors::create(&work_home,&gid,"web-peer","chatgpt","Web member").expect("connector");
+        let id=entry["connector_id"].as_str().expect("id");
+        let prepared=web_model_connectors::prepare_binding(&work_home,id,600).expect("peer binding code");
+        let mut gateway=Gateway::start(&work_home);
+        let bound=gateway.call(request("cccc_session_bind",json!({"code":prepared["code"]}),Some("peer-chat"))).await;
+        assert_eq!(payload(&bound)["bound"],true,"{bound}");
+        let boot=gateway.call(request("cccc_bootstrap",json!({}),Some("peer-chat"))).await;
+        assert_eq!(payload(&boot)["session"]["role"],"peer","{boot}");
+        assert_eq!(payload(&boot)["session"]["actor_id"],"web-peer");
+        let report=gateway.call(request("cccc_message_send",json!({"to":["user"],"mode":"send","text":"peer report"}),Some("peer-chat"))).await;
+        assert_ne!(report["result"]["isError"],true,"{report}");
+        let forbidden=gateway.call(request("cccc_capability_use",json!({"tool_name":"cccc_actor","tool_arguments":{"action":"add","actor_id":"forbidden","runtime":"custom","by":"user"}}),Some("peer-chat"))).await;
+        assert_eq!(forbidden["result"]["isError"],true,"peer received Foreman administration: {forbidden}");
+        let own_target=gateway.call(request("cccc_group_bind",json!({"group":gid,"chat_url":"https://chatgpt.com/c/peer-chat"}),Some("peer-chat"))).await;
+        assert_eq!(payload(&own_target)["role"],"peer","{own_target}");
+        assert_eq!(payload(&own_target)["actor_id"],"web-peer");
+        assert_eq!(payload(&own_target)["callback_target_ready"],true);
+        let group=GroupStore::new(work_home.clone()).expect("store").load(&gid).expect("group");
+        assert_eq!(group.actors[0].id,"local-lead");
+        assert_eq!(group.actors.len(),2,"peer created a privileged member");
+        assert_eq!(group.extra["web_model_browser_targets"]["web-peer"]["url"],"https://chatgpt.com/c/peer-chat");
+        assert!(group.extra["web_model_browser_targets"].get("local-lead").is_none());
+        gateway.stop().await;
+    }).await;
+    let _ = client
+        .call(&DaemonRequest {
+            v: 1,
+            op: "shutdown".into(),
+            args: Map::new(),
+        })
+        .await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+    result.expect("peer assertions");
+}

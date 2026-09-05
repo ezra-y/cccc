@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { T05ChangeMark } from "../../T05ChangeMark";
 import { useTranslation } from "react-i18next";
 import type { Actor, GroupMeta, RemoteAccessState } from "../../../types";
 import * as api from "../../../services/api";
@@ -124,9 +123,20 @@ function setupPillClass(tone: SetupTone): string {
   return "border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] text-[var(--color-text-secondary)]";
 }
 
-function SetupSection({ title, children }: { title: ReactNode; children: ReactNode }) {
+function SetupSection({
+  title,
+  children,
+  review,
+}: {
+  title: ReactNode;
+  children: ReactNode;
+  review?: string;
+}) {
   return (
-    <div className="border-t border-[var(--glass-border-subtle)] pt-3 first:border-t-0 first:pt-0">
+    <div
+      data-t05-review={review}
+      className={`border-t border-[var(--glass-border-subtle)] pt-3 first:border-t-0 first:pt-0 ${review ? "rounded-lg p-3" : ""}`}
+    >
       <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--color-text-muted)]">
         {title}
       </div>
@@ -174,6 +184,10 @@ export default function WebModelConnectorsTab({
     Record<string, api.WebModelBrowserSession>
   >({});
   const [browserBusy, setBrowserBusy] = useState(false);
+  const [sharedBrowser, setSharedBrowser] = useState<api.WebModelBrowserSession | null>(null);
+  const [sharedBusy, setSharedBusy] = useState(false);
+  const [sharedError, setSharedError] = useState("");
+  const sharedReadSeq = useRef(0);
   const [showBrowserSurface, setShowBrowserSurface] = useState(false);
   const [browserSurfaceRefreshNonce, setBrowserSurfaceRefreshNonce] = useState(0);
   const [browserSurfaceRestartNonce, setBrowserSurfaceRestartNonce] = useState(0);
@@ -189,7 +203,6 @@ export default function WebModelConnectorsTab({
     setBrowserSession(null);
     setBrowserSessionsByActor({});
     setBrowserBusy(false);
-    setShowBrowserSurface(false);
     setConversationUrlDraft("");
     setTargetDraftMode("existing");
     setTargetDraftTouched(false);
@@ -247,23 +260,21 @@ export default function WebModelConnectorsTab({
       selectedHealth?.target?.saved_at ||
       "",
   ).trim();
-  const browserActive = Boolean(selectedBrowserSession?.active);
-  const browserReady = Boolean(selectedBrowserSession?.ready);
+  const browserActive = Boolean(sharedBrowser?.active);
+  const browserReady = Boolean(sharedBrowser?.ready);
   const boundConversationUrl = String(selectedBrowserSession?.conversation_url || "").trim();
   const pendingNewChatBind = Boolean(selectedBrowserSession?.pending_new_chat_bind);
   const pendingNewChatUrl = String(selectedBrowserSession?.pending_new_chat_url || "").trim();
-  const liveBrowserUrl = String(selectedBrowserSession?.tab_url || "").trim();
-  const currentBrowserUrl =
-    liveBrowserUrl || String(selectedBrowserSession?.last_tab_url || "").trim();
-  const currentBrowserConversationUrl =
-    liveBrowserConversationUrlFromSession(selectedBrowserSession);
-  const browserStatusLabel =
-    String(selectedHealth?.browser?.label || "").trim() ||
-    (browserReady
-      ? wm("browser.ready")
+  const liveBrowserUrl = String(sharedBrowser?.tab_url || "").trim();
+  const currentBrowserUrl = liveBrowserUrl;
+  const currentBrowserConversationUrl = liveBrowserConversationUrlFromSession(sharedBrowser);
+  const browserStatusLabel = browserReady
+    ? wm("browser.ready")
+    : sharedBrowser?.login_required
+      ? wm("browser.signInNeeded")
       : browserActive
-        ? wm("browser.signInNeeded")
-        : wm("browser.notOpen"));
+        ? wm("browser.open")
+        : wm("browser.notOpen");
   const targetStatusLabel =
     String(selectedHealth?.target?.label || "").trim() ||
     (boundConversationUrl
@@ -385,9 +396,9 @@ export default function WebModelConnectorsTab({
     : !sessionBound
       ? wm("t05.copyHint")
       : !selectedActorRunning
-        ? wm("next.startActorInGroup")
+        ? wm("t05.startMember")
         : !browserReady
-          ? wm("next.signIn")
+          ? wm("t05.checkSharedLogin")
           : !boundConversationUrl && !pendingNewChatBind
             ? wm("next.bindTarget")
             : healthNextActionText(selectedHealth, wm) || wm("next.ready");
@@ -509,50 +520,49 @@ export default function WebModelConnectorsTab({
     [wm],
   );
 
-  const loadBrowserSurfaceSession = useCallback(async () => {
-    const gid = groupId;
-    const aid = actorId;
-    const resp = await api.fetchWebModelBrowserSurfaceSession(gid, aid, { inspect: true });
-    if (!matchesWebModelActorSelection(currentSelectionRef.current, gid, aid)) return resp;
-    if (resp.ok) {
-      const nextSession = resp.result.browser_session || null;
-      const key = browserSessionKey(gid, aid);
-      setBrowserSessionsByActor((current) => ({ ...current, [key]: nextSession || {} }));
-      const currentSelection = currentSelectionRef.current;
-      if (gid === currentSelection.groupId && aid === currentSelection.actorId)
-        setBrowserSession(nextSession);
-    } else {
-      setError(resp.error?.message || wm("errors.loadBrowserSessionFailed"));
-    }
-    return resp;
-  }, [actorId, groupId, wm]);
-
-  const startBrowserSurfaceSession = useCallback(
-    async (size: { width: number; height: number }) => {
-      const gid = groupId;
-      const aid = actorId;
-      const resp = await api.openWebModelBrowserSurfaceSession({
-        groupId: gid,
-        actorId: aid,
-        width: size.width,
-        height: size.height,
-        inspect: true,
-      });
-      if (!matchesWebModelActorSelection(currentSelectionRef.current, gid, aid)) return resp;
-      if (resp.ok) {
-        const nextSession = resp.result.browser_session || null;
-        const key = browserSessionKey(gid, aid);
-        setBrowserSessionsByActor((current) => ({ ...current, [key]: nextSession || {} }));
-        const currentSelection = currentSelectionRef.current;
-        if (gid === currentSelection.groupId && aid === currentSelection.actorId)
-          setBrowserSession(nextSession);
-      } else {
-        setError(resp.error?.message || wm("errors.openBrowserFailed"));
+  const sharedRequest = useCallback(
+    async (
+      action: "status" | "open" | "close" = "status",
+      options: { inspect?: boolean; width?: number; height?: number } = {},
+    ) => {
+      const seq = ++sharedReadSeq.current;
+      const resp = await api.sharedWebModelBrowser(action, options);
+      if (seq === sharedReadSeq.current) {
+        if (resp.ok) {
+          setSharedBrowser(resp.result.browser_session || null);
+          setSharedError("");
+        } else setSharedError(resp.error.message);
       }
       return resp;
     },
-    [actorId, groupId, wm],
+    [],
   );
+  const loadBrowserSurfaceSession = useCallback(() => sharedRequest(), [sharedRequest]);
+  const startBrowserSurfaceSession = useCallback(
+    (size: { width: number; height: number }) => sharedRequest("open", { ...size, inspect: true }),
+    [sharedRequest],
+  );
+
+  useEffect(() => {
+    if (!isActive || sharedBusy) return;
+    let cancelled = false;
+    let pending = false;
+    const timer = window.setInterval(async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        if (!cancelled) await sharedRequest();
+      } catch {
+        /* Next read retries. */
+      } finally {
+        pending = false;
+      }
+    }, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [isActive, sharedBusy, sharedRequest]);
 
   const loadInitial = useCallback(async () => {
     if (!isActive) return;
@@ -563,6 +573,7 @@ export default function WebModelConnectorsTab({
         api.fetchGroups(),
         api.fetchRemoteAccessState(),
         loadConnectors(),
+        loadBrowserSurfaceSession(),
       ]);
       if (remoteResp.ok) {
         setRemoteState(remoteResp.result?.remote_access || null);
@@ -578,7 +589,7 @@ export default function WebModelConnectorsTab({
     } finally {
       setBusy(false);
     }
-  }, [isActive, loadConnectors, wm]);
+  }, [isActive, loadConnectors, loadBrowserSurfaceSession, wm]);
 
   useEffect(() => {
     void loadInitial();
@@ -597,7 +608,6 @@ export default function WebModelConnectorsTab({
       setActorId("");
       setBrowserSession(null);
       setBrowserSessionsByActor({});
-      setShowBrowserSurface(false);
       return;
     }
     let cancelled = false;
@@ -679,6 +689,16 @@ export default function WebModelConnectorsTab({
       setError(wm("errors.selectActorFirst"));
       return;
     }
+    if (
+      selectedConnector &&
+      !window.confirm(
+        wm("t05.confirmRotate", {
+          group: groups.find((g) => g.group_id === gid)?.title || gid,
+          actor: selectedActorLabel || aid,
+        }),
+      )
+    )
+      return null;
     setCreateBusy(true);
     setError("");
     try {
@@ -711,6 +731,20 @@ export default function WebModelConnectorsTab({
   const revokeConnector = async (connectorId: string) => {
     const cid = String(connectorId || "").trim();
     if (!cid) return;
+    const target = activeConnectors.find((item) => item.connector_id === cid);
+    if (
+      !target ||
+      !window.confirm(
+        wm("t05.confirmDisconnect", {
+          group: groups.find((g) => g.group_id === target.group_id)?.title || target.group_id,
+          actor:
+            actors.find((actor) => actor.id === target.actor_id)?.title ||
+            target.label ||
+            target.actor_id,
+        }),
+      )
+    )
+      return;
     setRevokeBusyId(cid);
     setError("");
     try {
@@ -728,100 +762,61 @@ export default function WebModelConnectorsTab({
   };
 
   const openBrowserLogin = async () => {
-    const gid = groupId;
-    const aid = actorId;
-    setBrowserBusy(true);
-    setError("");
+    if (sharedBusy) return;
+    setSharedBusy(true);
+    setSharedError("");
     try {
-      const result = await startBrowserSurfaceSession({ width: 1366, height: 900 });
-      if (!matchesWebModelActorSelection(currentSelectionRef.current, gid, aid)) return;
-      if (!result.ok) {
-        setError(result.error.message);
-        return;
-      }
-      setShowBrowserSurface(true);
-      setBrowserSurfaceRefreshNonce((value) => value + 1);
-      pushNotice(wm("notices.signInSurfaceOpened"));
-    } catch (error) {
-      if (matchesWebModelActorSelection(currentSelectionRef.current, gid, aid))
-        setError(String(error));
-    } finally {
-      if (matchesWebModelActorSelection(currentSelectionRef.current, gid, aid))
-        setBrowserBusy(false);
-    }
-  };
-
-  const checkBrowserSessionStatus = async () => {
-    setBrowserBusy(true);
-    setError("");
-    try {
-      if (showBrowserSurface) {
-        await loadBrowserSurfaceSession();
-      } else {
-        await loadBrowserSession();
-      }
-    } finally {
-      setBrowserBusy(false);
-    }
-  };
-
-  const reloadEmbeddedBrowser = async () => {
-    setBrowserBusy(true);
-    setError("");
-    try {
-      const gid = groupId;
-      const aid = actorId;
-      const resp = await api.closeWebModelBrowserSurfaceSession(gid, aid);
-      if (resp.ok) {
-        const nextSession = resp.result?.browser_session || null;
-        const key = browserSessionKey(gid, aid);
-        setBrowserSessionsByActor((current) => ({ ...current, [key]: nextSession || {} }));
-        const currentSelection = currentSelectionRef.current;
-        if (gid === currentSelection.groupId && aid === currentSelection.actorId)
-          setBrowserSession(nextSession);
-        if (!matchesWebModelActorSelection(currentSelectionRef.current, gid, aid)) return;
-        const reopened = await startBrowserSurfaceSession({ width: 1366, height: 900 });
-        if (!reopened.ok) {
-          setError(reopened.error.message);
-          return;
-        }
+      const response = await startBrowserSurfaceSession({ width: 1366, height: 900 });
+      if (response.ok) {
         setShowBrowserSurface(true);
-        setBrowserSurfaceRestartNonce((value) => value + 1);
-        pushNotice(wm("notices.browserRestarted"));
-      } else {
-        setError(resp.error?.message || wm("errors.restartBrowserFailed"));
+        setBrowserSurfaceRefreshNonce((v) => v + 1);
       }
-    } catch {
-      setError(wm("errors.restartBrowserFailed"));
+    } catch (error) {
+      setSharedError(String(error));
     } finally {
-      setBrowserBusy(false);
+      setSharedBusy(false);
     }
   };
-
-  const closeBrowserSession = async () => {
-    setBrowserBusy(true);
-    setError("");
+  const checkBrowserSessionStatus = async () => {
+    setSharedBusy(true);
+    setSharedError("");
     try {
-      const gid = groupId;
-      const aid = actorId;
-      const resp = await api.closeWebModelBrowserSurfaceSession(gid, aid);
-      if (resp.ok) {
-        const nextSession = resp.result?.browser_session || null;
-        const key = browserSessionKey(gid, aid);
-        setBrowserSessionsByActor((current) => ({ ...current, [key]: nextSession || {} }));
-        const currentSelection = currentSelectionRef.current;
-        if (gid === currentSelection.groupId && aid === currentSelection.actorId) {
-          setBrowserSession(nextSession);
-          setShowBrowserSurface(false);
-          pushNotice(wm("notices.browserClosed"));
-        }
-      } else {
-        setError(resp.error?.message || wm("errors.closeBrowserFailed"));
-      }
-    } catch {
-      setError(wm("errors.closeBrowserFailed"));
+      await sharedRequest("status", { inspect: true });
+    } catch (error) {
+      setSharedError(String(error));
     } finally {
-      setBrowserBusy(false);
+      setSharedBusy(false);
+    }
+  };
+  const reloadEmbeddedBrowser = async () => {
+    if (sharedBusy || !window.confirm(wm("t05.confirmRestartBrowser"))) return;
+    setSharedBusy(true);
+    setSharedError("");
+    try {
+      const closed = await sharedRequest("close");
+      if (!closed.ok) return;
+      const opened = await startBrowserSurfaceSession({ width: 1366, height: 900 });
+      if (opened.ok) {
+        setShowBrowserSurface(true);
+        setBrowserSurfaceRestartNonce((v) => v + 1);
+      }
+    } catch (error) {
+      setSharedError(String(error));
+    } finally {
+      setSharedBusy(false);
+    }
+  };
+  const closeBrowserSession = async () => {
+    if (sharedBusy || !window.confirm(wm("t05.confirmCloseBrowser"))) return;
+    setSharedBusy(true);
+    setSharedError("");
+    try {
+      const response = await sharedRequest("close");
+      if (response.ok) setShowBrowserSurface(false);
+    } catch (error) {
+      setSharedError(String(error));
+    } finally {
+      setSharedBusy(false);
     }
   };
 
@@ -830,17 +825,18 @@ export default function WebModelConnectorsTab({
     options?: { newChat?: boolean; notice?: string },
   ) => {
     if (!groupId || !actorId) return;
+    const gid = groupId;
+    const aid = actorId;
     setBrowserBusy(true);
     setError("");
     try {
-      const gid = groupId;
-      const aid = actorId;
       const resp = await api.bindCurrentWebModelBrowserConversation({
         groupId: gid,
         actorId: aid,
         conversationUrl,
         newChat: Boolean(options?.newChat),
       });
+      if (!matchesWebModelActorSelection(currentSelectionRef.current, gid, aid)) return;
       if (resp.ok) {
         const nextSession = resp.result?.browser_session || null;
         const key = browserSessionKey(gid, aid);
@@ -861,14 +857,30 @@ export default function WebModelConnectorsTab({
         setError(resp.error?.message || wm("errors.bindConversationFailed"));
       }
     } catch {
-      setError(wm("errors.bindConversationFailed"));
+      if (matchesWebModelActorSelection(currentSelectionRef.current, gid, aid))
+        setError(wm("errors.bindConversationFailed"));
     } finally {
-      setBrowserBusy(false);
+      if (matchesWebModelActorSelection(currentSelectionRef.current, gid, aid))
+        setBrowserBusy(false);
     }
   };
 
   const saveDeliveryTarget = async () => {
     if (targetSaveDisabled) return;
+    const next = targetDraftMode === "new" ? wm("target.optionNew") : targetDraftUrl;
+    if (
+      !window.confirm(
+        wm("t05.confirmTarget", {
+          group: groups.find((g) => g.group_id === groupId)?.title || groupId,
+          actor: selectedActorLabel || actorId,
+          previous:
+            boundConversationUrl ||
+            (pendingNewChatBind ? wm("target.optionNew") : wm("target.savedNone")),
+          next,
+        }),
+      )
+    )
+      return;
     if (targetDraftMode === "new") {
       await bindConversation("https://chatgpt.com/", {
         newChat: true,
@@ -883,6 +895,16 @@ export default function WebModelConnectorsTab({
     const gid = groupId;
     const aid = actorId;
     if (bindingBusy || !gid || !aid) return;
+    if (
+      sessionBound &&
+      !window.confirm(
+        wm("t05.confirmReplacementCode", {
+          group: groups.find((g) => g.group_id === gid)?.title || gid,
+          actor: selectedActorLabel || aid,
+        }),
+      )
+    )
+      return;
     setBindingBusy(true);
     setError("");
     try {
@@ -960,15 +982,121 @@ export default function WebModelConnectorsTab({
           </div>
         ) : null}
 
-        <div data-t05-change="web-group-selector" className="space-y-2">
+        <section
+          data-t05-change="shared-browser"
+          data-t05-review="shared-login"
+          className={settingsWorkspacePanelClass(isDark)}
+        >
+          <h4 className="font-semibold text-[var(--color-text-primary)]">
+            {wm("t05.sharedTitle")}
+          </h4>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+            {wm("t05.sharedLoginNote")}
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span data-testid="shared-login-status" className="mr-auto text-sm">
+              {sharedError ? wm("t05.sharedUnavailable") : browserStatusLabel}
+            </span>
+            <button
+              type="button"
+              data-t05-change="open-shared-browser"
+              disabled={sharedBusy}
+              onClick={() => void openBrowserLogin()}
+              className={primaryButtonClass(sharedBusy)}
+            >
+              {wm("buttons.openChatGpt")}
+            </button>
+            <button
+              type="button"
+              data-t05-change="preview-toggle"
+              onClick={() => setShowBrowserSurface((v) => !v)}
+              className={secondaryButtonClass("sm")}
+            >
+              {showBrowserSurface ? wm("t05.hide") : wm("t05.view")}
+            </button>
+            <button
+              type="button"
+              disabled={sharedBusy}
+              onClick={() => void checkBrowserSessionStatus()}
+              className={secondaryButtonClass("sm")}
+            >
+              {wm("buttons.checkStatus")}
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+            {wm("t05.sharedBrowser")}
+          </p>
+          {sharedError && (
+            <p role="alert" className="mt-2 text-sm text-rose-600 dark:text-rose-300">
+              {sharedError}
+            </p>
+          )}
+          {showBrowserSurface && (
+            <div className="mt-3">
+              <div className="mb-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  data-t05-change="restart-shared-browser"
+                  disabled={sharedBusy}
+                  onClick={() => void reloadEmbeddedBrowser()}
+                  className={secondaryButtonClass("sm")}
+                >
+                  {wm("buttons.reloadChatGpt")}
+                </button>
+                <button
+                  type="button"
+                  data-t05-change="close-shared-browser"
+                  disabled={sharedBusy}
+                  onClick={() => void closeBrowserSession()}
+                  className={secondaryButtonClass("sm")}
+                >
+                  {wm("buttons.closeBrowser")}
+                </button>
+              </div>
+              <ProjectedBrowserSurfacePanel
+                key={`shared-chatgpt:${browserSurfaceRestartNonce}`}
+                isDark={isDark}
+                refreshNonce={browserSurfaceRefreshNonce}
+                defaultViewerMode="browser"
+                viewportClassName="h-[60vh] min-h-[350px] max-h-[700px]"
+                loadSession={loadBrowserSurfaceSession}
+                webSocketUrl={api.getSharedWebModelBrowserWebSocketUrl()}
+                fallbackUrl="https://chatgpt.com/"
+                labels={{
+                  starting: wm("browserSurface.starting"),
+                  waiting: wm("browserSurface.waiting"),
+                  ready: wm("browserSurface.ready"),
+                  failed: wm("browserSurface.failed"),
+                  closed: wm("browserSurface.closed"),
+                  reconnecting: wm("browserSurface.reconnecting"),
+                  reconnect: wm("browserSurface.reconnect"),
+                  frameAlt: wm("browserSurface.frameAlt"),
+                }}
+              />
+            </div>
+          )}
+        </section>
+
+        <div
+          data-t05-change="web-group-selector"
+          data-t05-review="group-selector"
+          className="space-y-2 rounded-lg p-2"
+        >
           <label className={labelClass(isDark)} htmlFor="t05-web-group">
             {wm("t05.selectGroup")}
-            <T05ChangeMark />
           </label>
           <select
             id="t05-web-group"
             value={groupId}
-            onChange={(event) => selectGroup(event.target.value)}
+            onChange={(event) => {
+              if (
+                targetDraftDirty &&
+                targetDraftTouched &&
+                !window.confirm(wm("t05.confirmDiscard"))
+              )
+                return;
+              selectGroup(event.target.value);
+            }}
             className={inputClass(isDark)}
           >
             {!groupId && <option value="">{wm("t05.selectGroup")}</option>}
@@ -987,7 +1115,6 @@ export default function WebModelConnectorsTab({
               <div className="flex flex-wrap items-center gap-2">
                 <div className="text-sm font-semibold text-[var(--color-text-primary)]">
                   {wm("summary.title")}
-                  <T05ChangeMark />
                 </div>
                 <span
                   className={[
@@ -1005,7 +1132,6 @@ export default function WebModelConnectorsTab({
               </div>
               <div className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
                 {wm("next.prefix", { action: nextSetupAction })}
-                <T05ChangeMark />
               </div>
             </div>
           </div>
@@ -1023,7 +1149,6 @@ export default function WebModelConnectorsTab({
             </div>
             <p className="mt-1 text-sm leading-6 text-[var(--color-text-tertiary)]">
               {wm("t05.emptyGroup")}
-              <T05ChangeMark />
             </p>
           </section>
         ) : null}
@@ -1051,121 +1176,23 @@ export default function WebModelConnectorsTab({
               </div>
             </div>
 
+            <p
+              data-testid="web-member-role"
+              className="mt-2 text-sm text-[var(--color-text-secondary)]"
+            >
+              {wm("t05.currentMember", {
+                member: selectedActorLabel || actorId,
+                role: wm(selectedActor.role === "foreman" ? "t05.roleForeman" : "t05.rolePeer"),
+              })}
+            </p>
             <div className="mt-4 space-y-4">
               <SetupSection
-                title={
-                  <span data-t05-change="shared-browser">
-                    {wm("chatSetup.accountTitle")}
-                    <T05ChangeMark />
-                  </span>
-                }
-              >
-                <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
-                  {wm("t05.sharedBrowser")}
-                </p>
-                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                  <div className="min-w-0 text-sm leading-6 text-[var(--color-text-secondary)]">
-                    <span className="font-semibold text-[var(--color-text-primary)]">
-                      {browserReady
-                        ? wm("browser.signedIn")
-                        : browserActive
-                          ? wm("browser.open")
-                          : wm("browser.notOpen")}
-                    </span>
-                    <span className="ml-2 text-xs text-[var(--color-text-tertiary)]">
-                      {browserReady
-                        ? wm("chatSetup.accountReadyHint")
-                        : wm("chatSetup.accountOpenHint")}
-                    </span>
-                    {selectedBrowserSession?.error ? (
-                      <div className="mt-1 text-xs leading-5 text-rose-600 dark:text-rose-300">
-                        {selectedBrowserSession.error}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
-                    <button
-                      type="button"
-                      onClick={() => void openBrowserLogin()}
-                      disabled={browserBusy || !groupId || !actorId}
-                      className={
-                        browserReady ? secondaryButtonClass("sm") : primaryButtonClass(browserBusy)
-                      }
-                    >
-                      {wm("buttons.openChatGpt")}
-                      <T05ChangeMark />
-                    </button>
-                    <button
-                      type="button"
-                      data-t05-change="preview-toggle"
-                      onClick={() => setShowBrowserSurface((value) => !value)}
-                      className={secondaryButtonClass("sm")}
-                    >
-                      {showBrowserSurface ? wm("t05.hide") : wm("t05.view")}
-                      <T05ChangeMark />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void checkBrowserSessionStatus()}
-                      disabled={browserBusy || !groupId || !actorId}
-                      className={secondaryButtonClass("sm")}
-                    >
-                      {wm("buttons.checkStatus")}
-                    </button>
-                  </div>
-                </div>
-                {showBrowserSurface && groupId && actorId ? (
-                  <div className="mt-3">
-                    <div className="mb-2 flex flex-col gap-2 rounded-lg border border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="text-xs leading-5 text-[var(--color-text-tertiary)]">
-                        {wm("embedded.reloadDescription")}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void reloadEmbeddedBrowser()}
-                        disabled={browserBusy || !groupId || !actorId}
-                        className={secondaryButtonClass("sm")}
-                      >
-                        {wm("buttons.reloadChatGpt")}
-                        <T05ChangeMark />
-                      </button>
-                    </div>
-                    <ProjectedBrowserSurfacePanel
-                      key={`chatgpt-actor-surface:${groupId}:${actorId}:${browserSurfaceRestartNonce}`}
-                      isDark={isDark}
-                      refreshNonce={browserSurfaceRefreshNonce}
-                      defaultViewerMode="browser"
-                      viewportClassName="h-[68vh] min-h-[460px] max-h-[780px]"
-                      loadSession={loadBrowserSurfaceSession}
-                      webSocketUrl={api.getWebModelBrowserSurfaceWebSocketUrl(groupId, actorId)}
-                      fallbackUrl="https://chatgpt.com/"
-                      labels={{
-                        starting: wm("browserSurface.starting"),
-                        waiting: wm("browserSurface.waiting"),
-                        ready: wm("browserSurface.ready"),
-                        failed: wm("browserSurface.failed"),
-                        closed: wm("browserSurface.closed"),
-                        reconnecting: wm("browserSurface.reconnecting"),
-                        reconnect: wm("browserSurface.reconnect"),
-                        frameAlt: wm("browserSurface.frameAlt"),
-                      }}
-                    />
-                  </div>
-                ) : null}
-              </SetupSection>
-
-              <SetupSection
-                title={
-                  <span data-t05-change="chat-binding">
-                    {wm("t05.identity")}
-                    <T05ChangeMark />
-                  </span>
-                }
+                review="chat-binding"
+                title={<span data-t05-change="chat-binding">{wm("t05.identity")}</span>}
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <span data-t05-change="binding-status">
                     {sessionBound ? wm("t05.bound") : wm("t05.unbound")}
-                    <T05ChangeMark />
                   </span>
                   <button
                     type="button"
@@ -1175,7 +1202,6 @@ export default function WebModelConnectorsTab({
                     className={secondaryButtonClass("sm")}
                   >
                     {wm("t05.copy")}
-                    <T05ChangeMark />
                   </button>
                   {sessionBound && selectedConnector && (
                     <button
@@ -1186,7 +1212,6 @@ export default function WebModelConnectorsTab({
                       className={secondaryButtonClass("sm")}
                     >
                       {wm("t05.disconnect")}
-                      <T05ChangeMark />
                     </button>
                   )}
                 </div>
@@ -1195,9 +1220,11 @@ export default function WebModelConnectorsTab({
                 </p>
               </SetupSection>
               <details data-t05-change="legacy-setup">
-                <summary className="cursor-pointer text-sm">
+                <summary
+                  data-t05-review="legacy-fold"
+                  className="cursor-pointer text-sm rounded-md"
+                >
                   {wm("t05.original")}
-                  <T05ChangeMark />
                 </summary>
                 {!webAccessReady ? (
                   <div className="mt-4 flex flex-col gap-3 border-t border-[var(--glass-border-subtle)] pt-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1304,7 +1331,6 @@ export default function WebModelConnectorsTab({
                 title={
                   <span data-t05-change="group-return-target">
                     {wm("chatSetup.deliveryTargetTitle")}
-                    <T05ChangeMark />
                   </span>
                 }
               >
@@ -1370,6 +1396,8 @@ export default function WebModelConnectorsTab({
                     </div>
                     <button
                       type="button"
+                      data-t05-change="save-return-target"
+                      data-t05-review="confirmed-target-save"
                       onClick={() => void saveDeliveryTarget()}
                       disabled={targetSaveDisabled}
                       className={
@@ -1379,7 +1407,6 @@ export default function WebModelConnectorsTab({
                       }
                     >
                       {wm("buttons.saveTarget")}
-                      <T05ChangeMark />
                     </button>
                   </div>
 
@@ -1404,10 +1431,7 @@ export default function WebModelConnectorsTab({
                     {targetDraftMode === "existing" ? (
                       <div className="ml-6 space-y-2 border-l border-[var(--glass-border-subtle)] pl-3">
                         <label className="block">
-                          <span className={labelClass(isDark)}>
-                            {wm("target.conversationUrl")}
-                            <T05ChangeMark />
-                          </span>
+                          <span className={labelClass(isDark)}>{wm("target.conversationUrl")}</span>
                           <div className="mt-1 flex flex-col gap-2 sm:flex-row">
                             <input
                               value={conversationUrlDraft}
@@ -1434,7 +1458,6 @@ export default function WebModelConnectorsTab({
                                 className={secondaryButtonClass("sm")}
                               >
                                 {wm("buttons.useCurrentTab")}
-                                <T05ChangeMark />
                               </button>
                             ) : null}
                           </div>
@@ -1598,14 +1621,6 @@ export default function WebModelConnectorsTab({
                     className={secondaryButtonClass("sm")}
                   >
                     {wm("buttons.checkStatus")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void closeBrowserSession()}
-                    disabled={browserBusy || !browserActive}
-                    className={secondaryButtonClass("sm")}
-                  >
-                    {wm("buttons.closeBrowser")}
                   </button>
                 </div>
               </details>

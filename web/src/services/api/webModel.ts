@@ -476,3 +476,30 @@ export function getWebModelBrowserSurfaceWebSocketUrl(groupId: string, actorId: 
     `${protocol}//${window.location.host}/api/v1/web-model/browser-session/ws?${params.toString()}`,
   );
 }
+
+/** Shared sign-in and preview have no group/member selection or return target. */
+export async function sharedWebModelBrowser(
+  action: "status" | "open" | "close" = "status",
+  options: { inspect?: boolean; width?: number; height?: number } = {},
+): Promise<ApiResponse<WebModelBrowserSurfaceResult>> {
+  const path = "/api/v1/web-model/shared-browser" + (action === "status" ? "" : `/${action}`);
+  const response = await apiJson<WebModelBrowserSurfaceResult>(
+    `${path}?inspect=${Boolean(options.inspect)}`,
+    action === "status"
+      ? undefined
+      : { method: "POST", body: JSON.stringify({ width: options.width, height: options.height }) },
+  );
+  if (!response.ok) return response;
+  return {
+    ok: true,
+    result: {
+      browser_session: response.result.browser_session || {},
+      browser_surface: normalizePresentationBrowserSurfaceState(response.result.browser_surface),
+    },
+  };
+}
+
+export function getSharedWebModelBrowserWebSocketUrl(): string {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return withAuthToken(`${protocol}//${window.location.host}/api/v1/web-model/shared-browser/ws`);
+}

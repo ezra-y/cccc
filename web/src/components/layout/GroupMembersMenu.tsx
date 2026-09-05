@@ -4,7 +4,6 @@ import type { Actor, SupportedRuntime } from "../../types";
 import { useFormStore, useGroupStore, useModalStore, useUIStore } from "../../stores";
 import * as api from "../../services/api";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
-import { T05ChangeMark } from "../T05ChangeMark";
 
 type Props = {
   groupId: string;
@@ -70,21 +69,19 @@ export function GroupMembersMenu({ groupId, actors, readOnly, onOpenActor, onEdi
         <button
           type="button"
           data-t05-change="members-entry"
+          data-t05-review="members-entry"
           className="inline-flex shrink-0 items-center rounded-lg border border-[var(--glass-border-subtle)] px-2 py-1.5 text-xs text-[var(--color-text-primary)]"
         >
           {t("t05Members.entry", { count: members.length })}
-          <T05ChangeMark />
         </button>
       </PopoverTrigger>
       <PopoverContent
         align="start"
-        className="w-[min(22rem,calc(100vw-2rem))] bg-[var(--color-bg-secondary)] p-3"
+        className="t05-members-menu w-[min(22rem,calc(100vw-2rem))] p-3"
         data-t05-change="members-menu"
+        data-t05-review="members-menu"
       >
-        <div className="mb-2 text-sm font-semibold">
-          {t("t05Members.title")}
-          <T05ChangeMark />
-        </div>
+        <div className="mb-2 text-sm font-semibold">{t("t05Members.title")}</div>
         <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
           {t("t05Members.nativeEditors")}
         </p>
@@ -112,7 +109,6 @@ export function GroupMembersMenu({ groupId, actors, readOnly, onOpenActor, onEdi
                       : actor.runtime}
                 </span>
               </span>
-              <T05ChangeMark />
             </button>
           ))}
           {!members.length && <p className="py-2 text-sm">{t("t05Members.empty")}</p>}
@@ -123,7 +119,6 @@ export function GroupMembersMenu({ groupId, actors, readOnly, onOpenActor, onEdi
               <details>
                 <summary className="cursor-pointer text-sm" data-t05-change="change-foreman">
                   {t("t05Members.changeForeman")}
-                  <T05ChangeMark />
                 </summary>
                 <div className="mt-2 flex gap-2">
                   {(["web_model", "local"] as const).map((kind) => (
@@ -136,7 +131,6 @@ export function GroupMembersMenu({ groupId, actors, readOnly, onOpenActor, onEdi
                       className="rounded-lg border border-[var(--glass-border-subtle)] px-2 py-1 text-sm disabled:opacity-50"
                     >
                       {t(`t05Members.${kind}`)}
-                      <T05ChangeMark />
                     </button>
                   ))}
                 </div>
@@ -153,7 +147,6 @@ export function GroupMembersMenu({ groupId, actors, readOnly, onOpenActor, onEdi
               }}
             >
               {t("t05Members.add")}
-              <T05ChangeMark />
             </button>
           </div>
         )}

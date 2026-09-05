@@ -1,4 +1,3 @@
-import { T05ChangeMark } from "../../T05ChangeMark";
 import { useActiveSettingsTab } from "./useActiveSettingsTab";
 import { useTranslation } from "react-i18next";
 import { InfoIcon } from "../../Icons";
@@ -150,7 +149,6 @@ export function SettingsNavigation({
                 className={tabButtonClass(activeTab === tab.id)}
               >
                 {tab.label}
-                {tab.id === "webModels" && <T05ChangeMark />}
               </button>
             ))}
           </div>
@@ -234,7 +232,6 @@ export function SettingsNavigation({
               }`}
             >
               {tab.label}
-              {tab.id === "webModels" && <T05ChangeMark />}
             </button>
           ))}
         </ScrollFade>

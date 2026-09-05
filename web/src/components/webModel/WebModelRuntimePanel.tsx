@@ -1,4 +1,3 @@
-import { T05ChangeMark } from "../T05ChangeMark";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -385,6 +384,7 @@ export function WebModelRuntimePanel({
       setError(message);
       return;
     }
+    if (!window.confirm(t("settings:webModels.chatgpt.t05.confirmRestartBrowser"))) return;
     setBusyAction("reload");
     setError("");
     try {
@@ -697,15 +697,16 @@ export function WebModelRuntimePanel({
             <button
               type="button"
               data-t05-change="member-preview-toggle"
+              data-t05-review="preview-toggle"
               onClick={() => setPreviewOpen((value) => !value)}
               className={iconButtonClass(false)}
             >
               {t(`settings:webModels.chatgpt.t05.${previewOpen ? "hide" : "view"}`)}
-              <T05ChangeMark />
             </button>
             <button
               type="button"
               data-t05-change="member-open-browser"
+              data-t05-review="open-browser"
               disabled={!canControlSurface || Boolean(busyAction)}
               onClick={() =>
                 void startBrowserSurfaceSession({ width: 1366, height: 900 })
@@ -726,7 +727,6 @@ export function WebModelRuntimePanel({
               className={iconButtonClass(false)}
             >
               {t("settings:webModels.chatgpt.buttons.openChatGpt")}
-              <T05ChangeMark />
             </button>
             <button
               type="button"
@@ -737,7 +737,6 @@ export function WebModelRuntimePanel({
               aria-label="Restart ChatGPT browser"
             >
               <RefreshIcon size={17} aria-hidden="true" />
-              <T05ChangeMark />
             </button>
             <button
               type="button"
@@ -747,7 +746,6 @@ export function WebModelRuntimePanel({
               aria-label="Open ChatGPT Web Model settings"
             >
               <SettingsIcon size={17} aria-hidden="true" />
-              <T05ChangeMark />
             </button>
           </div>
         </div>

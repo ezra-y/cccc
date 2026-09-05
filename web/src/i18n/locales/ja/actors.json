@@ -291,6 +291,8 @@
     "web_model": "Web モデル",
     "local": "ローカルモデル",
     "add": "メンバーを追加",
-    "noLocalRuntime": "使用できるローカル実行環境がありません。先にインストールしてください。"
+    "noLocalRuntime": "使用できるローカル実行環境がありません。先にインストールしてください。",
+    "confirmRuntimeChange": "「{{group}}」の「{{member}}」を {{previous}} から {{next}} に変更しますか？",
+    "webBindingRetired": "このメンバーの現在の Web 会話の紐付けは失効します。他のメンバーと共有ログインは変わりません。"
   }
 }

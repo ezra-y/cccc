@@ -8,7 +8,6 @@ use cccc_core::GroupStore;
 use cccc_core::integration_state;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -23,7 +22,9 @@ const DELIVERY_PREFERENCES_KEY: &str = "web_model_delivery_preferences";
 
 #[derive(Debug, Deserialize)]
 struct SessionQuery {
+    #[serde(default)]
     group_id: String,
+    #[serde(default)]
     actor_id: String,
     #[serde(default)]
     inspect: bool,
@@ -41,6 +42,10 @@ struct InspectQuery {
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/api/v1/web-model/shared-browser", get(shared_info))
+        .route("/api/v1/web-model/shared-browser/open", post(shared_open))
+        .route("/api/v1/web-model/shared-browser/close", post(shared_close))
+        .route("/api/v1/web-model/shared-browser/ws", get(shared_upgrade))
         .route("/api/v1/web-model/browser-session", get(info))
         .route("/api/v1/web-model/browser-session/open", post(open))
         .route("/api/v1/web-model/browser-session/close", post(close))
@@ -98,7 +103,7 @@ pub(super) async fn ensure_open_for_actor(
         .unwrap_or_else(|| "chatgpt".into());
     let target = super::web_model_delivery_state::target(state, group_id, actor_id)?;
     let open_url = browser_open_url(&target, provider_url(&provider));
-    let profile = browser_profile_path(state.home.root(), group_id, actor_id)?;
+    let profile = browser_profile_path(state.home.root());
     let headless = use_headless_browser(
         std::env::var("CCCC_WEB_MODEL_BROWSER_HEADLESS")
             .ok()
@@ -239,6 +244,14 @@ async fn upgrade(
     let group_id = required_identifier(&query.group_id, "group_id")?;
     let actor_id = required_identifier(&query.actor_id, "actor_id")?;
     validate_actor(&state, group_id, actor_id)?;
+    shared_upgrade(State(state), Query(query), ws).await
+}
+
+async fn shared_upgrade(
+    State(state): State<AppState>,
+    Query(query): Query<SessionQuery>,
+    ws: WebSocketUpgrade,
+) -> Result<Response, ApiError> {
     let session_key = surface_key();
     let vnc = query.mode.trim().eq_ignore_ascii_case("vnc");
     let viewer_mode = query.viewer_mode;
@@ -274,29 +287,69 @@ async fn upgrade(
     }))
 }
 
-async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool) -> ApiResult {
+// One shared browser owns sign-in. These admin-only endpoints never select a
+// member, bind a conversation, change a return target or enqueue a delivery.
+async fn shared_info(
+    State(state): State<AppState>,
+    Query(query): Query<InspectQuery>,
+) -> ApiResult {
+    shared_payload(&state, query.inspect).await
+}
+
+async fn shared_open(
+    State(state): State<AppState>,
+    Query(query): Query<InspectQuery>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let _operation = state.browser_surfaces.web_model_operation.lock().await;
+    let width = dimension(&body, "width", 1366, 640, 2560);
+    let height = dimension(&body, "height", 900, 480, 1600);
+    let headless = use_headless_browser(
+        std::env::var("CCCC_WEB_MODEL_BROWSER_HEADLESS")
+            .ok()
+            .as_deref(),
+    );
+    state
+        .browser_surfaces
+        .ensure_open_system(
+            surface_key(),
+            &browser_profile_path(state.home.root()),
+            "https://chatgpt.com/",
+            width,
+            height,
+            headless,
+        )
+        .await
+        .map_err(|error| ApiError::bad(format!("{error:#}")))?;
+    // ensure_open_system reuses an existing page without navigating it.
+    shared_payload(&state, query.inspect).await
+}
+
+async fn shared_close(State(state): State<AppState>) -> ApiResult {
+    let _operation = state.browser_surfaces.web_model_operation.lock().await;
+    state
+        .browser_surfaces
+        .close(surface_key())
+        .await
+        .map_err(|error| ApiError::bad(error.to_string()))?;
+    shared_payload(&state, false).await
+}
+
+async fn shared_payload(state: &AppState, inspect: bool) -> ApiResult {
+    let (surface, readiness) = observe_browser(state, inspect).await;
+    let meta = &surface["metadata"];
+    let browser = json!({"scope":"shared","active":surface["active"],"ready":readiness["ready"],
+        "login_required":readiness["login_required"],"message":readiness["message"],
+        "tab_url":readiness["tab_url"],"pid":meta["pid"],"cdp_port":meta["cdp_port"],
+        "visibility":meta["visibility"],"profile_dir":meta["profile_dir"],"started_at":surface["started_at"]});
+    Ok(success(
+        json!({"browser_session":browser,"browser_surface":surface}),
+    ))
+}
+
+async fn observe_browser(state: &AppState, inspect: bool) -> (Value, Value) {
     let session_key = surface_key();
     let mut surface = state.browser_surfaces.info(session_key).await;
-    let store = GroupStore::new(state.home.clone()).map_err(io_error)?;
-    let mut target = super::web_model_delivery_state::target(state, group_id, actor_id)?;
-    if let Some(target) = target.as_object_mut() {
-        target.remove("bound_session_hash");
-    }
-    let preferences = integration_state::group_get(&store, group_id, DELIVERY_PREFERENCES_KEY)
-        .map_err(io_error)?;
-    let stored_preference = preferences
-        .get(actor_id)
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let delivery_mode = match stored_preference["mode"].as_str() {
-        Some("image_compat") => "image_compat",
-        _ => "standard",
-    };
-    let delivery_preference = json!({
-        "mode":delivery_mode,
-        "updated_at":stored_preference["updated_at"].as_str().unwrap_or(""),
-        "updated_by":stored_preference["updated_by"].as_str().unwrap_or("")
-    });
     let active = surface["active"].as_bool().unwrap_or(false);
     let readiness = if active && inspect {
         let readiness = state
@@ -318,6 +371,32 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
     } else {
         json!({"ready":false,"login_required":false,"tab_url":surface["url"]})
     };
+    (surface, readiness)
+}
+
+async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool) -> ApiResult {
+    let (surface, readiness) = observe_browser(state, inspect).await;
+    let store = GroupStore::new(state.home.clone()).map_err(io_error)?;
+    let mut target = super::web_model_delivery_state::target(state, group_id, actor_id)?;
+    if let Some(target) = target.as_object_mut() {
+        target.remove("bound_session_hash");
+    }
+    let preferences = integration_state::group_get(&store, group_id, DELIVERY_PREFERENCES_KEY)
+        .map_err(io_error)?;
+    let stored_preference = preferences
+        .get(actor_id)
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let delivery_mode = match stored_preference["mode"].as_str() {
+        Some("image_compat") => "image_compat",
+        _ => "standard",
+    };
+    let delivery_preference = json!({
+        "mode":delivery_mode,
+        "updated_at":stored_preference["updated_at"].as_str().unwrap_or(""),
+        "updated_by":stored_preference["updated_by"].as_str().unwrap_or("")
+    });
+    let active = surface["active"].as_bool().unwrap_or(false);
     let metadata = surface
         .get("metadata")
         .cloned()
@@ -686,26 +765,8 @@ fn validate_actor(state: &AppState, group_id: &str, actor_id: &str) -> Result<()
     Ok(())
 }
 
-fn browser_profile_path(home: &Path, group_id: &str, actor_id: &str) -> Result<PathBuf, ApiError> {
-    let group_id = safe_segment(group_id)?;
-    let actor_id = safe_segment(actor_id)?;
-    let shared = home.join("state/web_model_browser/_shared/chatgpt_web/chrome_profile");
-    let legacy = home
-        .join("browser-profiles/web-model")
-        .join(group_id)
-        .join(actor_id);
-    if directory_has_content(&shared) || !directory_has_content(&legacy) {
-        Ok(shared)
-    } else {
-        Ok(legacy)
-    }
-}
-
-fn directory_has_content(path: &Path) -> bool {
-    fs::read_dir(path)
-        .ok()
-        .and_then(|mut entries| entries.next())
-        .is_some()
+fn browser_profile_path(home: &Path) -> PathBuf {
+    home.join("state/web_model_browser/_shared/chatgpt_web/chrome_profile")
 }
 
 fn provider_url(provider: &str) -> &'static str {
@@ -794,15 +855,6 @@ fn required_identifier<'a>(value: &'a str, key: &str) -> Result<&'a str, ApiErro
     (!value.is_empty())
         .then_some(value)
         .ok_or_else(|| ApiError::bad(format!("{key} is required")))
-}
-
-fn safe_segment(value: &str) -> Result<&str, ApiError> {
-    (!value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
-    .then_some(value)
-    .ok_or_else(|| ApiError::bad("invalid browser profile identifier"))
 }
 
 fn dimension(body: &Value, key: &str, default: u32, min: u32, max: u32) -> u32 {

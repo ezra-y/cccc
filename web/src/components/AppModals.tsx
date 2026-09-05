@@ -928,12 +928,32 @@ export function AppModals({
       throw new Error(NO_CHANGES_SENTINEL);
     }
 
-    if (options.restart) {
-      const msg = willChangeSecrets
-        ? t("saveSecretsAndRestartConfirm", { label })
-        : t("saveAndRestartConfirm", { label });
-      if (!window.confirm(msg)) return;
+    const plannedRuntime =
+      mode === "profile" ? String(selectedProfile?.runtime || currentRuntime) : nextRuntime;
+    const changesRuntime = plannedRuntime !== currentRuntime && (runtimeChanged || profileChanged);
+    const confirmations: string[] = [];
+    if (changesRuntime) {
+      const runtimeLabel = (value: string) =>
+        value === "web_model"
+          ? t("t05Members.web_model")
+          : RUNTIME_INFO[value as SupportedRuntime]?.label || value;
+      confirmations.push(
+        t("t05Members.confirmRuntimeChange", {
+          group: groupDoc?.title || selectedGroupId,
+          member: label,
+          previous: runtimeLabel(currentRuntime),
+          next: runtimeLabel(plannedRuntime),
+        }),
+      );
+      if (currentRuntime === "web_model") confirmations.push(t("t05Members.webBindingRetired"));
     }
+    if (options.restart)
+      confirmations.push(
+        willChangeSecrets
+          ? t("saveSecretsAndRestartConfirm", { label })
+          : t("saveAndRestartConfirm", { label }),
+      );
+    if (confirmations.length && !window.confirm(confirmations.join("\n\n"))) return;
 
     setBusy("actor-update");
     try {

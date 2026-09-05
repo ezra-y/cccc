@@ -234,14 +234,26 @@ fn connect(
             "Attach a project directory to this group first",
         ));
     }
-    let foreman = actors::visible(group).next();
-    if foreman.is_some_and(|actor| actor.runtime != ActorRuntime::WebModel) {
+    // A bound Chat operates its actual member, including peers under a local leader.
+    // Only an unbound onboarding request uses the default Foreman flow.
+    let member = if let Some(binding) = bound {
+        let id = binding["actor_id"].as_str().unwrap_or_default();
+        Some(actors::find(group, id).ok_or_else(|| {
+            OpError::new(
+                "connector_actor_unavailable",
+                "The bound member no longer exists",
+            )
+        })?)
+    } else {
+        actors::visible(group).next()
+    };
+    if member.is_some_and(|actor| actor.runtime != ActorRuntime::WebModel) {
         return Err(OpError::new(
             "foreman_conflict",
             "This group already has a local Foreman; change it explicitly in the group interface",
         ));
     }
-    let actor_id = foreman
+    let actor_id = member
         .map(|actor| actor.id.as_str())
         .unwrap_or("chat-foreman");
     let existing = web_model_connectors::load(home)
@@ -268,7 +280,7 @@ fn connect(
             "This group belongs to another Chat. Use a freshly issued connection code to replace that binding",
         ));
     }
-    let created_actor = foreman.is_none();
+    let created_actor = member.is_none();
     if created_actor {
         op(
             home,
@@ -288,7 +300,9 @@ fn connect(
                 &group.group_id,
                 actor_id,
                 "chatgpt",
-                "ChatGPT Foreman",
+                member
+                    .map(|actor| actor.title.as_str())
+                    .unwrap_or("ChatGPT Foreman"),
             )
             .map_err(OpError::io)?;
             created_connector = entry["connector_id"].as_str().map(str::to_owned);
@@ -336,7 +350,7 @@ fn connect(
                 .is_some();
         object(
             json!({"group_id":current.group_id,"group_title":current.title,"actor_id":actor_id,
-                "role":"foreman","workspace":workspace(&current),"inbound_bound":true,"can_dispatch":true,
+                "role":actors::effective_role(&current,actor_id),"workspace":workspace(&current),"inbound_bound":true,"can_dispatch":true,
                 "callback_target_ready":callback_ready,"status":if callback_ready{"configured"}else{"needs_chat_url"},
                 "reused":reused,"members":actors::visible(&current).map(|actor|json!({"actor_id":actor.id,"title":actor.title,"runtime":actor.runtime,"role":actors::effective_role(&current,&actor.id)})).collect::<Vec<_>>(),
                 "next_steps":if callback_ready {vec!["Call cccc_bootstrap. The callback target is saved; browser sign-in and an actual delivery still need verification."]}

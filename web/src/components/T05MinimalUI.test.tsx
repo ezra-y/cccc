@@ -12,6 +12,7 @@ import { GroupMembersMenu } from "./layout/GroupMembersMenu";
 import type { Actor } from "../types";
 
 const mocks = vi.hoisted(() => ({
+  sharedWebModelBrowser: vi.fn(),
   fetchGroups: vi.fn(),
   fetchActors: vi.fn(),
   fetchWebModelConnectors: vi.fn(),
@@ -37,6 +38,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../services/api", () => ({
   ...mocks,
   getWebModelBrowserSurfaceWebSocketUrl: () => "ws://local.invalid/preview",
+  getSharedWebModelBrowserWebSocketUrl: () => "ws://local.invalid/shared-preview",
 }));
 vi.mock("../utils/copy", () => ({ copyTextToClipboard: mocks.copy }));
 vi.mock("../stores", () => ({
@@ -140,6 +142,10 @@ async function render(
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubGlobal(
+    "confirm",
+    vi.fn(() => true),
+  );
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   host = document.createElement("div");
   document.body.append(host);
@@ -183,6 +189,21 @@ beforeEach(() => {
       binding_expires_at: new Date(Date.now() + 600_000).toISOString(),
     }),
   );
+  mocks.sharedWebModelBrowser.mockResolvedValue(
+    ok({
+      browser_session: {
+        active: true,
+        ready: true,
+        login_required: false,
+        tab_url: "https://chatgpt.com/c/shared-live",
+      },
+      browser_surface: { active: true, state: "ready" },
+    }),
+  );
+  mocks.revokeWebModelConnector.mockResolvedValue(ok({ revoked: true }));
+  mocks.bindCurrentWebModelBrowserConversation.mockResolvedValue(
+    ok({ browser_session: session("g_a") }),
+  );
   mocks.copy.mockResolvedValue(true);
   mocks.fetchRuntimes.mockResolvedValue(
     ok({ runtimes: [{ name: "opencode", available: true, recommended_command: "opencode" }] }),
@@ -192,6 +213,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("minimal overlay on upstream UI", () => {
@@ -220,11 +242,13 @@ describe("minimal overlay on upstream UI", () => {
     expect(mocks.createWebModelConnectorBinding).toHaveBeenLastCalledWith("conn-g_b");
     expect(mocks.copy.mock.calls[0][0]).toContain("乙组");
     expect(mocks.copy.mock.calls[0][0]).toContain('"one\\"code"');
-    for (const region of host.querySelectorAll("[data-t05-change]"))
-      expect(
-        region.querySelector("[data-t05-mark] circle"),
-        region.getAttribute("data-t05-change")!,
-      ).not.toBeNull();
+    expect(host.querySelector("[data-t05-mark] circle")).toBeNull();
+    expect(host.querySelector('[data-t05-review="group-selector"]')).not.toBeNull();
+    expect(host.querySelector('[data-t05-review="chat-binding"]')).not.toBeNull();
+    expect(
+      host.querySelector('[data-t05-change="group-return-target"]')?.closest("[data-t05-review]"),
+    ).toBeNull();
+    expect(host.querySelectorAll("[data-t05-review]").length).toBeLessThanOrEqual(5);
   });
   it("discards a late actor response and a late code after switching groups", async () => {
     const delayedActors = deferred<ReturnType<typeof ok<{ actors: Actor[] }>>>();
@@ -302,8 +326,16 @@ describe("group members shortcut", () => {
       />,
     );
     await click('[data-t05-change="members-entry"]');
-    for (const region of document.querySelectorAll("[data-t05-change]"))
-      expect(region.querySelector("[data-t05-mark] circle")).not.toBeNull();
+    expect(document.querySelector('[data-t05-review="members-entry"]')).not.toBeNull();
+    expect(document.querySelector('[data-t05-review="members-menu"]')).not.toBeNull();
+    expect(
+      document.querySelector('[data-t05-change="member-details"]')?.hasAttribute("data-t05-review"),
+    ).toBe(false);
+    expect(
+      document
+        .querySelector('[data-t05-change="members-menu"]')
+        ?.classList.contains("t05-members-menu"),
+    ).toBe(true);
     await click('[data-t05-change="member-details"]');
     expect(inspect).toHaveBeenCalledWith("lead");
     await click('[data-t05-change="members-entry"]');
@@ -348,5 +380,104 @@ describe("group members shortcut", () => {
     );
     await wait();
     expect(edit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("shared login, role, and confirmation ownership", () => {
+  it("renders one shared login before group selection and keeps it usable with no groups", async () => {
+    mocks.fetchGroups.mockResolvedValue(ok({ groups: [] }));
+    await render();
+    const shared = find('[data-t05-review="shared-login"]');
+    const selector = find('[data-t05-change="web-group-selector"]');
+    expect(
+      shared.compareDocumentPosition(selector) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(shared.textContent).toContain("所有工作组共用");
+    await click('[data-t05-change="open-shared-browser"]');
+    expect(mocks.sharedWebModelBrowser).toHaveBeenCalledWith("open", {
+      width: 1366,
+      height: 900,
+      inspect: true,
+    });
+    expect(mocks.openWebModelBrowserSurfaceSession).not.toHaveBeenCalled();
+    expect(mocks.createWebModelConnector).not.toHaveBeenCalled();
+  });
+  it("shows a web peer under a local leader and never takes group connection status as shared login", async () => {
+    const peer = { ...lead, id: "web-peer", role: "peer", title: "网页组员" } as Actor;
+    mocks.fetchActors.mockImplementation(async (gid: string) =>
+      ok({
+        actors: gid === "g_a" ? [lead] : [{ ...lead, id: "local-lead", runtime: "opencode" }, peer],
+      }),
+    );
+    mocks.fetchWebModelBrowserSession.mockResolvedValue(
+      ok({ browser_session: { active: false, ready: false, login_required: true } }),
+    );
+    await render();
+    const before = find('[data-testid="shared-login-status"]').textContent;
+    await choose("g_b");
+    expect(find('[data-testid="shared-login-status"]').textContent).toBe(before);
+    expect(find('[data-testid="web-member-role"]').textContent).toContain("网页组员 · 组员");
+    expect(
+      mocks.sharedWebModelBrowser.mock.calls.every(
+        (call) => call.length === 0 || call[0] === "status",
+      ),
+    ).toBe(true);
+  });
+  it("requires confirmation before disconnecting exactly one member, without logging out the shared browser", async () => {
+    await render();
+    await choose("g_b");
+    vi.mocked(window.confirm).mockReturnValue(false);
+    await click('[data-t05-change="disconnect-chat"]');
+    expect(window.confirm).toHaveBeenLastCalledWith(expect.stringContaining("乙组"));
+    expect(mocks.revokeWebModelConnector).not.toHaveBeenCalled();
+    vi.mocked(window.confirm).mockReturnValue(true);
+    await click('[data-t05-change="disconnect-chat"]');
+    expect(mocks.revokeWebModelConnector).toHaveBeenCalledExactlyOnceWith("conn-g_b");
+    expect(mocks.sharedWebModelBrowser.mock.calls.some((call) => call[0] === "close")).toBe(false);
+  });
+  it("cancels replacement-code generation before even issuing a new one", async () => {
+    await render();
+    vi.mocked(window.confirm).mockReturnValue(false);
+    await click('[data-t05-change="copy-binding"]');
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("另一条聊天成功使用该码"));
+    expect(mocks.createWebModelConnectorBinding).not.toHaveBeenCalled();
+    expect(mocks.copy).not.toHaveBeenCalled();
+  });
+  it("confirms changed return targets on save, but not while selecting the draft", async () => {
+    await render();
+    const newChat = host.querySelectorAll<HTMLInputElement>(
+      'input[name="chatgpt-delivery-target"]',
+    )[1];
+    await act(async () => newChat.click());
+    await wait();
+    expect(window.confirm).not.toHaveBeenCalled();
+    vi.mocked(window.confirm).mockReturnValue(false);
+    await click('[data-t05-change="save-return-target"]');
+    expect(window.confirm).toHaveBeenCalledWith(
+      expect.stringContaining("https://chatgpt.com/c/g_a"),
+    );
+    expect(mocks.bindCurrentWebModelBrowserConversation).not.toHaveBeenCalled();
+    expect(newChat.checked).toBe(true);
+    await choose("g_b");
+    expect((find("#t05-web-group") as HTMLSelectElement).value).toBe("g_a");
+    vi.mocked(window.confirm).mockReturnValue(true);
+    await click('[data-t05-change="save-return-target"]');
+    expect(mocks.bindCurrentWebModelBrowserConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ groupId: "g_a", actorId: "lead", newChat: true }),
+    );
+  });
+  it("warns that restart and close affect all groups; cancelling never closes the browser", async () => {
+    await render();
+    await click('[data-t05-change="preview-toggle"]');
+    vi.mocked(window.confirm).mockReturnValue(false);
+    await click('[data-t05-change="restart-shared-browser"]');
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("所有组"));
+    await click('[data-t05-change="close-shared-browser"]');
+    expect(window.confirm).toHaveBeenLastCalledWith(expect.stringContaining("所有使用它的工作组"));
+    expect(
+      mocks.sharedWebModelBrowser.mock.calls.some(
+        (call) => call[0] === "close" || call[0] === "open",
+      ),
+    ).toBe(false);
   });
 });

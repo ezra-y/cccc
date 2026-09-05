@@ -678,8 +678,7 @@ fn validate_session_actor(home: &HomeLayout, connector: &Value) -> io::Result<()
     let valid = crate::actors::find(&group, actor_id).is_some_and(|actor| {
         actor.enabled
             && actor.runtime == cccc_contracts::ActorRuntime::WebModel
-            && crate::actors::effective_role(&group, actor_id)
-                == Some(cccc_contracts::ActorRole::Foreman)
+            && crate::actors::effective_role(&group, actor_id).is_some()
     });
     if !valid {
         return Err(io::Error::new(
@@ -939,21 +938,18 @@ mod tests {
     }
 
     #[test]
-    fn session_binding_revalidates_disabled_replaced_and_demoted_foremen() {
+    fn session_binding_revalidates_enabled_web_members_without_freezing_their_role() {
         let (_temp, home, groups) = session_fixture();
         let store = crate::GroupStore::new(home.clone()).expect("fixture operation succeeds");
         let original = store.load(&groups[0]).expect("fixture operation succeeds");
         bind_session(&home, "route-a", &issue(&home, "route-a"), "active-chat")
             .expect("fixture operation succeeds");
         let pending = issue(&home, "route-a");
-        for change in ["disabled", "local", "demoted", "removed"] {
+        for change in ["disabled", "local", "removed"] {
             let mut group = original.clone();
             match change {
                 "disabled" => group.actors[0].enabled = false,
                 "local" => group.actors[0].runtime = cccc_contracts::ActorRuntime::Codex,
-                "demoted" => group
-                    .actors
-                    .insert(0, cccc_contracts::Actor::new("new-lead")),
                 "removed" => group.actors.clear(),
                 _ => unreachable!(),
             }
@@ -967,8 +963,17 @@ mod tests {
             assert!(find_session(&home, "active-chat").is_err());
             assert!(prepare_binding(&home, "route-a", 600).is_err());
         }
-        store.save(&original).expect("fixture operation succeeds");
-        bind_session(&home, "route-a", &pending, "new-chat").expect("fixture operation succeeds");
+        let mut demoted = original;
+        demoted
+            .actors
+            .insert(0, cccc_contracts::Actor::new("new-lead"));
+        store.save(&demoted).expect("fixture operation succeeds");
+        assert!(
+            find_session(&home, "active-chat")
+                .expect("role can change")
+                .is_some()
+        );
+        bind_session(&home, "route-a", &pending, "new-chat").expect("peer can bind");
         assert!(
             find_session(&home, "new-chat")
                 .expect("fixture operation succeeds")
