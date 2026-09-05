@@ -493,8 +493,13 @@ export function WebModelRuntimePanel({
   const showActivity = shouldShowActivity(activityBlock, queuedCount);
   const nextSummary =
     recommendedAction && recommendedAction !== "none"
-      ? String(nextAction?.label || "").trim() || recommendedAction
+      ? t(`settings:webModels.chatgpt.nextAction.${recommendedAction}`, {
+          defaultValue: String(nextAction?.label || "").trim() || recommendedAction,
+        })
       : "";
+  const nextReason = t(`settings:webModels.chatgpt.nextActionReason.${recommendedAction}`, {
+    defaultValue: String(nextAction?.reason || "").trim(),
+  });
   const deliveryMode: WebModelDeliveryMode =
     session?.delivery_mode === "image_compat" ? "image_compat" : "standard";
   const deliveryModeDisabled = Boolean(readOnly || busyAction);
@@ -523,9 +528,11 @@ export function WebModelRuntimePanel({
             >
               {session?.ready
                 ? wm("browser.ready")
-                : session?.active
+                : session?.login_required
                   ? wm("browser.signInNeeded")
-                  : wm("browser.notOpen")}
+                  : session?.active
+                    ? wm("browser.open")
+                    : wm("browser.notOpen")}
             </span>
             <span
               className={classNames(
@@ -554,7 +561,7 @@ export function WebModelRuntimePanel({
             {nextSummary ? (
               <span
                 className="min-w-0 max-w-[min(54vw,520px)] truncate text-xs text-[var(--color-text-tertiary)]"
-                title={nextAction?.reason ? `${nextSummary}: ${nextAction.reason}` : nextSummary}
+                title={nextReason ? `${nextSummary}: ${nextReason}` : nextSummary}
               >
                 {t("settings:webModels.chatgpt.next.prefix", {
                   action: t(`settings:webModels.chatgpt.nextAction.${recommendedAction}`, {

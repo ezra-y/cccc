@@ -1341,7 +1341,7 @@ mod retry_integration_tests {
         let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
         home.initialize().expect("initialize");
         let (shutdown, _) = tokio::sync::broadcast::channel(1);
-        let (_, _, browser, state) = crate::app_with_shutdown(
+        let (api, _, browser, state) = crate::app_with_shutdown(
             home.clone(),
             shutdown.clone(),
             crate::WebMode::Normal,
@@ -1363,10 +1363,22 @@ mod retry_integration_tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        let api_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("API listener");
+        let api_url = format!("http://{}", api_listener.local_addr().expect("API address"));
+        let api_server = tokio::spawn(async move {
+            axum::serve(
+                api_listener,
+                api.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+        });
         let count = Arc::new(AtomicUsize::new(0));
         let received = Arc::clone(&count);
         let page = r#"<!doctype html><html><body>
-<button style="position:fixed;left:10px;top:10px;width:130px;height:36px" type="button" onclick="document.querySelector('#busy').remove();document.querySelector('textarea').value='';this.remove()">Finish current answer</button>
+<button style="position:fixed;left:10px;top:10px;width:130px;height:36px" type="button" onclick="document.querySelector('#busy').remove();this.remove()">Finish current answer</button>
+<button style="position:fixed;left:350px;top:10px;width:130px;height:36px" type="button" onclick="document.querySelector('textarea').value='';this.remove()">Resolve own test draft</button>
 <button id="busy" type="button" aria-label="Stop streaming" style="position:fixed;left:180px;top:10px">Stop</button>
 <textarea id="prompt-textarea" placeholder="Message" style="position:fixed;left:10px;top:70px;width:650px;height:120px">unsent human draft</textarea>
 <button data-testid="send-button" type="button" aria-label="Send prompt" style="position:fixed;left:10px;top:230px;width:100px;height:35px" onclick="const t=document.querySelector('textarea');if(!t.value)return;const d=document.createElement('div');d.dataset.messageAuthorRole='user';d.textContent=t.value;d.style='margin-top:290px';document.body.append(d);t.value='';fetch('/received',{method:'POST'})">Send</button>
@@ -1445,10 +1457,57 @@ mod retry_integration_tests {
                 0,
                 "sent during the current answer"
             );
+            let health: Value = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("HTTP client")
+                .get(format!(
+                    "{api_url}/api/v1/web-model/browser-session?group_id={gid}&actor_id=web"
+                ))
+                .send()
+                .await
+                .expect("native health endpoint")
+                .json()
+                .await
+                .expect("health JSON");
+            assert_eq!(
+                health["result"]["health_snapshot"]["next_action"]["recommended"], "wait_for_reply",
+                "busy browser was misleadingly reported as no action needed: {health}"
+            );
             browser
                 .command(surface_key(), &json!({"t":"click","x":75,"y":28}))
                 .await
                 .expect("finish fixture answer");
+            let draft_wait = deliver_pending(&state, gid, "web")
+                .await
+                .expect("retained draft");
+            assert!(matches!(draft_wait, DeliveryOutcome::Idle));
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                0,
+                "draft did not block submission"
+            );
+            let draft_health: Value = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("HTTP client")
+                .get(format!(
+                    "{api_url}/api/v1/web-model/browser-session?group_id={gid}&actor_id=web"
+                ))
+                .send()
+                .await
+                .expect("draft health endpoint")
+                .json()
+                .await
+                .expect("draft health JSON");
+            assert_eq!(
+                draft_health["result"]["health_snapshot"]["next_action"]["recommended"],
+                "resolve_draft"
+            );
+            browser
+                .command(surface_key(), &json!({"t":"click","x":390,"y":28}))
+                .await
+                .expect("resolve isolated fixture draft");
             let delivered = deliver_pending(&state, gid, "web")
                 .await
                 .expect("resumed attempt");
@@ -1484,7 +1543,9 @@ mod retry_integration_tests {
                 .collect::<Vec<_>>();
             assert_eq!(
                 transitions,
-                vec!["claimed", "failed", "claimed", "accepted"]
+                vec![
+                    "claimed", "failed", "claimed", "failed", "claimed", "accepted"
+                ]
             );
             let mail = call(
                 "inbox_peek",
@@ -1573,6 +1634,7 @@ mod retry_integration_tests {
         let _ = daemon_call(&state, "shutdown", Default::default()).await;
         let _ = timeout(Duration::from_secs(5), daemon).await;
         server.abort();
+        api_server.abort();
         outcome
             .expect("browser flow assertions")
             .expect("bounded browser flow");

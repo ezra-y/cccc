@@ -1353,7 +1353,16 @@
         "bind_current_chat": "Bind current chat",
         "retry_delivery": "Retry delivery",
         "inspect_error": "Inspect error",
-        "login_chatgpt": "Sign in to ChatGPT"
+        "login_chatgpt": "Sign in to ChatGPT",
+        "resolve_draft": "Resolve the draft",
+        "wait_for_reply": "Wait for the current reply",
+        "inspect_browser": "Check browser readiness"
+      },
+      "nextActionReason": {
+        "resolve_draft": "The report is retained. Resolve the input draft to resume delivery.",
+        "wait_for_reply": "The current response will not be interrupted. Delivery resumes when it ends.",
+        "inspect_browser": "Readiness is not confirmed. Check the browser; a missing composer does not prove that you are signed out.",
+        "login_chatgpt": "Sign in with this browser before delivering the queued report."
       },
       "common": { "none": "none", "notSet": "Not set" }
     }

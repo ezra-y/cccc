@@ -1348,7 +1348,16 @@
         "bind_current_chat": "绑定当前会话",
         "retry_delivery": "重试投递",
         "inspect_error": "检查错误",
-        "login_chatgpt": "登录 ChatGPT"
+        "login_chatgpt": "登录 ChatGPT",
+        "resolve_draft": "先处理输入框草稿",
+        "wait_for_reply": "等待当前回答结束",
+        "inspect_browser": "检查浏览器状态"
+      },
+      "nextActionReason": {
+        "resolve_draft": "报告已保留，处理完输入框草稿后会自动继续投递。",
+        "wait_for_reply": "不会打断当前回答，结束后自动继续投递。",
+        "inspect_browser": "尚未确认页面就绪。请检查浏览器；输入框未就绪不代表账号已退出。",
+        "login_chatgpt": "请先在这个浏览器中登录，再继续投递保留的报告。"
       },
       "common": { "none": "无", "notSet": "未设置" }
     }

@@ -145,7 +145,9 @@ function healthNextActionText(
   const label = wm(`nextAction.${recommended}`, {
     defaultValue: String(action?.label || "").trim() || recommended,
   });
-  const reason = String(action?.reason || "").trim();
+  const reason = wm(`nextActionReason.${recommended}`, {
+    defaultValue: String(action?.reason || "").trim(),
+  });
   return reason ? `${label}: ${reason}` : label;
 }
 

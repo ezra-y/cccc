@@ -301,7 +301,7 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
             .unwrap_or_else(|error| {
                 json!({
                     "ready":false,
-                    "login_required":true,
+                    "login_required":false,
                     "tab_url":surface["url"],
                     "message":error.to_string()
                 })
@@ -374,6 +374,8 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
         .as_str()
         .or_else(|| submission.as_str())
         .unwrap_or("");
+    let waiting =
+        (internal_delivery_status == "deferred").then(|| deferred_action(submission_evidence));
     let send_selector = submission["send_selector"].as_str().unwrap_or("");
     let pending_new_chat_last_tab_url = submission["tab_url"]
         .as_str()
@@ -434,10 +436,10 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
             "Binding chat",
             "Prompt was submitted; waiting for ChatGPT to assign the chat URL.",
         ),
-        "submitting" if internal_delivery_status == "deferred" => (
-            "Waiting to submit",
-            "ChatGPT is responding and no safe Send prompt control is available yet.",
-        ),
+        "submitting" if waiting.is_some() => {
+            let (_, label, reason) = waiting.expect("deferred action");
+            (label, reason)
+        }
         "submitting" => (
             "Submitting",
             "CCCC is currently injecting this batch into the ChatGPT browser session.",
@@ -489,6 +491,8 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
         )
     } else if matches!(target_state, "missing" | "invalid" | "unavailable") {
         ("bind_chat", "Choose a target ChatGPT chat", target_reason)
+    } else if let Some(action) = waiting {
+        action
     } else if delivery_state == "pending_bind" {
         (
             "wait_for_chat_bind",
@@ -499,6 +503,12 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
         ("inspect_error", "Inspect ChatGPT delivery", delivery_reason)
     } else if delivery_state == "failed" {
         ("retry_delivery", "Retry ChatGPT delivery", delivery_reason)
+    } else if !ready {
+        (
+            "inspect_browser",
+            "Check browser readiness",
+            "Browser readiness has not been confirmed for the current page.",
+        )
     } else {
         (
             "none",
@@ -508,6 +518,8 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
     };
     let tone = if delivery_state == "failed" {
         "error"
+    } else if next_action == "wait_for_reply" {
+        "neutral"
     } else if next_action != "none" {
         "needs"
     } else if ready && matches!(target_state, "bound" | "new_chat_pending") {
@@ -607,6 +619,31 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
     Ok(success(json!({
         "browser_session":browser,"browser_surface":surface,"health_snapshot":health
     })))
+}
+
+fn deferred_action(evidence: &str) -> (&'static str, &'static str, &'static str) {
+    match evidence {
+        "not_sent_composer_occupied" => (
+            "resolve_draft",
+            "Resolve the draft",
+            "A draft is still in the input box. The report is retained and will resume after the draft is resolved.",
+        ),
+        "not_sent_chat_busy" => (
+            "wait_for_reply",
+            "Wait for the current reply",
+            "ChatGPT is still responding. The queued report will resume when this reply ends.",
+        ),
+        "not_sent_login_required" => (
+            "login_chatgpt",
+            "Sign in to ChatGPT",
+            "Sign in using this browser before the queued report can be delivered.",
+        ),
+        _ => (
+            "inspect_browser",
+            "Check browser readiness",
+            "The report has not been submitted. Inspect the browser before retrying.",
+        ),
+    }
 }
 
 fn cached_readiness(surface: &Value) -> Value {
@@ -773,4 +810,21 @@ fn dimension(body: &Value, key: &str, default: u32, min: u32, max: u32) -> u32 {
 
 fn io_error(error: io::Error) -> ApiError {
     ApiError::bad(error.to_string())
+}
+
+#[cfg(test)]
+mod wait_status_tests {
+    #[test]
+    fn pending_input_and_authentication_have_distinct_actions() {
+        for (evidence, action) in [
+            ("not_sent_composer_occupied", "resolve_draft"),
+            ("not_sent_chat_busy", "wait_for_reply"),
+            ("not_sent_login_required", "login_chatgpt"),
+            ("new_unknown_preflight", "inspect_browser"),
+        ] {
+            let actual = super::deferred_action(evidence);
+            assert_eq!(actual.0, action);
+            assert!(!actual.1.is_empty() && !actual.2.is_empty());
+        }
+    }
 }

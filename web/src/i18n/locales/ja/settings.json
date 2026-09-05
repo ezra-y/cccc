@@ -1353,7 +1353,16 @@
         "bind_current_chat": "現在の会話をバインド",
         "retry_delivery": "配信を再試行",
         "inspect_error": "エラーを確認",
-        "login_chatgpt": "ChatGPT にサインイン"
+        "login_chatgpt": "ChatGPT にサインイン",
+        "resolve_draft": "入力中の下書きを確認",
+        "wait_for_reply": "現在の回答の終了を待つ",
+        "inspect_browser": "ブラウザーの状態を確認"
+      },
+      "nextActionReason": {
+        "resolve_draft": "レポートは保持されています。下書きを処理すると配信が再開します。",
+        "wait_for_reply": "現在の回答は中断しません。終了後に配信を再開します。",
+        "inspect_browser": "ページの準備状態が未確認です。入力欄が使えないだけでは、ログアウトとは判断しません。",
+        "login_chatgpt": "このブラウザーでログインすると、保持されたレポートの配信を再開できます。"
       },
       "common": { "none": "なし", "notSet": "未設定" }
     }
