@@ -1718,4 +1718,249 @@ mod retry_integration_tests {
             .expect("browser flow assertions")
             .expect("bounded browser flow");
     }
+
+    #[tokio::test]
+    async fn two_group_ten_report_draft_wait_has_one_worker_per_group() {
+        if crate::system_browser_path().is_none() {
+            return;
+        }
+        let temp = tempfile::tempdir().expect("isolated home");
+        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+        home.initialize().expect("initialize");
+        let (shutdown, _) = tokio::sync::broadcast::channel(1);
+        let (_, _, browser, state) = crate::app_with_shutdown(
+            home.clone(),
+            shutdown.clone(),
+            crate::WebMode::Normal,
+            None,
+            crate::LiveBinding {
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
+            "two-group-browser".into(),
+        );
+        let daemon_home = home.clone();
+        let daemon = tokio::spawn(async move { cccc_daemon::run(daemon_home).await });
+        for _ in 0..100 {
+            if daemon_call(&state, "ping", Default::default())
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let records = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let sink = Arc::clone(&records);
+        let page = r#"<!doctype html><body>
+<button type="button" style="position:fixed;left:350px;top:10px;width:130px;height:36px" onclick="document.querySelector('textarea').value=''">Clear fixture draft</button>
+<form><textarea id="prompt-textarea" style="position:fixed;left:10px;top:70px;width:650px;height:120px"></textarea>
+<button type="button" aria-label="Send prompt" style="position:fixed;left:10px;top:230px;width:100px;height:35px" onclick="const t=document.querySelector('textarea');if(!t.value)return;const p=t.value;t.value='';const messages=JSON.parse(localStorage.getItem(location.pathname)||'[]');messages.push(p);localStorage.setItem(location.pathname,JSON.stringify(messages));render(p);fetch('/received',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:location.pathname,prompt:p})})">Send</button></form>
+<script>function render(p){const d=document.createElement('div');d.dataset.messageAuthorRole='user';d.textContent=p;d.style='margin-top:300px';document.body.append(d)}JSON.parse(localStorage.getItem(location.pathname)||'[]').forEach(render);</script></body>"#;
+        let app = axum::Router::new()
+            .route(
+                "/a",
+                axum::routing::get(move || async move { axum::response::Html(page) }),
+            )
+            .route(
+                "/b",
+                axum::routing::get(move || async move { axum::response::Html(page) }),
+            )
+            .route(
+                "/received",
+                axum::routing::post(move |axum::Json(value): axum::Json<Value>| {
+                    let sink = Arc::clone(&sink);
+                    async move {
+                        sink.lock().expect("record lock").push(value);
+                        "ok"
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let base = format!("http://{}", listener.local_addr().expect("address"));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let work_state = state.clone();
+        let work_home = home.clone();
+        let work_browser = Arc::clone(&browser);
+        let profile = temp.path().join("browser");
+        let operation = async move {
+            let state = work_state;
+            let home = work_home;
+            let browser = work_browser;
+            let call = |op: &'static str, value: Value| {
+                daemon_call(&state, op, value.as_object().cloned().expect("request"))
+            };
+            let mut groups = Vec::new();
+            for label in ["a", "b"] {
+                let created = call("group_create", json!({"title":format!("fixture-{label}")}))
+                    .await
+                    .expect("group");
+                let gid = created["group"]["group_id"]
+                    .as_str()
+                    .expect("group ID")
+                    .to_owned();
+                call("actor_add",json!({"group_id":gid,"actor_id":"web","runtime":"web_model","by":"user","env":{"CCCC_WEB_MODEL_DELIVERY_MODE":"browser"}})).await.expect("actor");
+                call(
+                    "actor_start",
+                    json!({"group_id":gid,"actor_id":"web","by":"user"}),
+                )
+                .await
+                .expect("start");
+                web_model_connectors::save_browser_target(
+                    &home,
+                    &gid,
+                    "web",
+                    Some(json!({"kind":"existing_chat","url":format!("{base}/{label}")})),
+                )
+                .expect("target");
+                groups.push((label, gid));
+            }
+            browser
+                .ensure_open(surface_key(), &profile, &format!("{base}/a"), 800, 600)
+                .await
+                .expect("one browser");
+            let initial_browser = browser.info(surface_key()).await;
+            browser
+                .command(surface_key(), &json!({"t":"click","x":100,"y":110}))
+                .await
+                .expect("focus");
+            browser
+                .command(
+                    surface_key(),
+                    &json!({"t":"text","text":"PRESERVE_GROUP_A_DRAFT"}),
+                )
+                .await
+                .expect("draft");
+            let mut sources = Vec::new();
+            for round in 0..5 {
+                for (label, gid) in &groups {
+                    let marker = format!("ROUTED_{label}_{round}");
+                    let event=call("send",json!({"group_id":gid,"by":"user","to":["web"],"text":marker,"message_mode":"mail"})).await.expect("report");
+                    let id = event["event"]["id"].as_str().expect("event ID").to_owned();
+                    call("message_deliver",json!({"group_id":gid,"by":"user","source_event_id":id,"actor_ids":["web"]})).await.expect("promote original");
+                    sources.push((gid.clone(), id, marker));
+                }
+            }
+            for _ in 0..10 {
+                for (_, gid) in &groups {
+                    ensure_worker(state.clone(), gid.clone(), "web".into()).await;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let store = GroupStore::new(home.clone()).expect("store");
+            for (_, gid) in &groups {
+                let events =
+                    ledger::read_all(&store.ledger_path(gid).expect("ledger")).expect("events");
+                let attempts = events
+                    .iter()
+                    .filter(|event| event.kind == "web_model.browser_delivery.submitting")
+                    .count();
+                assert_eq!(
+                    attempts, 1,
+                    "repeated admission bypassed the polling owner in {gid}"
+                );
+            }
+            assert!(
+                records.lock().expect("records").is_empty(),
+                "B navigated or sent while A had a draft"
+            );
+            assert_eq!(
+                browser.info(surface_key()).await["url"],
+                format!("{base}/a")
+            );
+            browser
+                .command(surface_key(), &json!({"t":"click","x":390,"y":28}))
+                .await
+                .expect("resolve own fixture draft");
+            timeout(Duration::from_secs(12), async {
+                loop {
+                    if records.lock().expect("records").len() == 2 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("both original batches resume");
+            // Wait until the native completion records, not just the page echoes, settle.
+            timeout(Duration::from_secs(5), async {
+                loop {
+                    let accepted = groups
+                        .iter()
+                        .map(|(_, gid)| {
+                            ledger::read_all(&store.ledger_path(gid).expect("ledger"))
+                                .expect("events")
+                                .into_iter()
+                                .filter(|event| {
+                                    event.kind == "runtime.delivery"
+                                        && event.data["state"] == "accepted"
+                                })
+                                .count()
+                        })
+                        .sum::<usize>();
+                    if accepted == 10 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("all ten reports accepted");
+            let received = records.lock().expect("records").clone();
+            for (label, gid) in &groups {
+                let own = received
+                    .iter()
+                    .find(|item| item["path"] == format!("/{label}"))
+                    .expect("own target received");
+                let text = own["prompt"].as_str().expect("prompt");
+                for (source_gid, id, marker) in &sources {
+                    assert_eq!(
+                        text.contains(marker),
+                        source_gid == gid,
+                        "wrong group received {marker}"
+                    );
+                    if source_gid == gid {
+                        assert!(text.contains(id), "batch omitted original event ID");
+                    }
+                }
+                let unread = call(
+                    "inbox_peek",
+                    json!({"group_id":gid,"actor_id":"web","by":"web"}),
+                )
+                .await
+                .expect("inbox");
+                assert_eq!(unread["messages"].as_array().expect("messages").len(), 5);
+            }
+            for _ in 0..10 {
+                for (_, gid) in &groups {
+                    ensure_worker(state.clone(), gid.clone(), "web".into()).await;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(
+                records.lock().expect("records").len(),
+                2,
+                "accepted batches were sent again"
+            );
+            assert_eq!(
+                browser.info(surface_key()).await["started_at"],
+                initial_browser["started_at"]
+            );
+            eprintln!(
+                "TWO_GROUP_REAL_CHROME: ten original reports; same-named actors isolated; A draft preserved; one polling owner each; two batches resumed; ten accepted once; Mail unread"
+            );
+        };
+        let result = tokio::spawn(timeout(Duration::from_secs(35), operation)).await;
+        let _ = shutdown.send(());
+        let _ = browser.close(surface_key()).await;
+        let _ = daemon_call(&state, "shutdown", Default::default()).await;
+        let _ = timeout(Duration::from_secs(5), daemon).await;
+        server.abort();
+        result
+            .expect("test assertions")
+            .expect("bounded two-group flow");
+    }
 }
