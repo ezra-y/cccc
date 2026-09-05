@@ -119,6 +119,24 @@ fn observe_started_turn(
     }
 }
 
+/// A lost provider stream is a failed handoff, not a completed user task.
+/// Reuse normal report promotion/deduplication; an idle or intentionally stopped
+/// session has no unfinished turn to report.
+pub(super) fn fail_active_turn(session: &Session, reason: &str) {
+    if session.stopped.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let Some(turn_id) = active_context(session) else {
+        return;
+    };
+    complete_turn(
+        session,
+        &json!({"params":{"turn":{
+            "id":turn_id,"status":"failed","error":{"message":reason}
+        }}}),
+    );
+}
+
 fn complete_turn(session: &Session, message: &Value) {
     let Ok(mut active_turn) = session.active_turn.lock() else {
         return;

@@ -26,6 +26,7 @@ pub(super) fn spawn(
                             .pointer("/params/reason")
                             .and_then(Value::as_str)
                             .unwrap_or("managed Agent disconnected");
+                        output::fail_active_turn(&session, reason);
                         output::emit(
                             &session,
                             "headless.session.disconnected",
@@ -48,10 +49,12 @@ pub(super) fn spawn(
                         actor_id = %session.actor_id,
                         "managed Actor event reader fell behind; stopping the unreplayable session"
                     );
+                    output::fail_active_turn(&session, "managed event reader lost unreplayable events");
                     stop_after_provider_exit(&session);
                     break;
                 }
                 Err(RecvError::Closed) => {
+                    output::fail_active_turn(&session, "managed event stream closed before the active turn finished");
                     stop_after_provider_exit(&session);
                     break;
                 }
@@ -84,9 +87,13 @@ pub(crate) async fn verify_claude_reader_release(
     let group = store.create("reader release", "").expect("group");
     store
         .mutate(&group.group_id, |doc| {
+            let mut lead = cccc_contracts::Actor::new("web-lead");
+            lead.runtime = cccc_contracts::ActorRuntime::WebModel;
+            cccc_core::actors::add(doc, lead)?;
             let mut actor = cccc_contracts::Actor::new("claude-reader");
             actor.runtime = cccc_contracts::ActorRuntime::Claude;
-            doc.actors.push(actor);
+            cccc_core::actors::add(doc, actor)?;
+            doc.running = true;
             Ok(())
         })
         .expect("actor");
@@ -105,7 +112,10 @@ pub(crate) async fn verify_claude_reader_release(
         stopped: AtomicBool::new(false),
         stop_lock: Mutex::new(()),
         startup_prompt: Mutex::new(None),
-        active_turn: Mutex::new(None),
+        active_turn: Mutex::new(Some(super::ActiveTurn {
+            turn_id: "reader-in-flight".into(),
+            started_at: cccc_contracts::utc_now(),
+        })),
     });
     let weak = Arc::downgrade(&session);
     let receiver = managed.subscribe();
@@ -167,6 +177,28 @@ pub(crate) async fn verify_claude_reader_release(
     // Keep the protocol sender alive throughout this assertion; channel closure
     // from dropping the client must not mask a reader leak.
     assert!(!managed.process_running());
+    let history =
+        cccc_core::ledger::read_all(&store.ledger_path(&group.group_id).expect("ledger path"))
+            .expect("history");
+    let notices = history
+        .iter()
+        .filter(|event| event.kind == "chat.message")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        notices.len(),
+        usize::from(corrupt_transcript.is_some()),
+        "unexpected disconnect must notify once; intentional stop must not wake the Foreman"
+    );
+    if let Some(notice) = notices.first() {
+        assert_eq!(notice.data["to"], serde_json::json!(["web-lead"]));
+        let text = notice.data["text"].as_str().expect("failure notice");
+        assert!(
+            text.contains("failed"),
+            "disconnect was not reported as failure: {text}"
+        );
+        assert_eq!(notice.data["source_actor_id"], "claude-reader");
+        assert_eq!(notice.data["source_turn_id"], "reader-in-flight");
+    }
     if corrupt_transcript.is_some() {
         let events =
             cccc_core::ledger::read_all(&store.ledger_path(&group.group_id).expect("ledger path"))
