@@ -284,11 +284,13 @@ mod tests {
 
     #[tokio::test]
     async fn unavailable_peer_reports_connect_failure() {
-        let unavailable = tokio::net::TcpSocket::new_v4().expect("socket");
-        unavailable
-            .bind("127.0.0.1:0".parse().expect("address"))
-            .expect("bind unavailable endpoint");
+        // A bound-but-not-listening socket can time out on macOS instead of
+        // refusing a connection. This case needs a closed endpoint, not a stall.
+        let unavailable = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("temporary endpoint");
         let endpoint = format!("http://{}", unavailable.local_addr().expect("address"));
+        drop(unavailable);
 
         let (value, error) = send_remote(
             Method::GET,
@@ -304,6 +306,9 @@ mod tests {
         .await;
 
         assert_eq!(value, json!({}));
-        assert!(error.contains("remote pairing status failed (connect)"));
+        assert!(
+            error.contains("remote pairing status failed (connect)"),
+            "actual error: {error}"
+        );
     }
 }

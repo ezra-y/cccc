@@ -1493,8 +1493,77 @@ mod retry_integration_tests {
             .await
             .expect("mail unchanged");
             assert_eq!(mail["messages"].as_array().expect("messages").len(), 1);
+            let initial_browser = browser.info(surface_key()).await;
+            for round in 2..=20 {
+                let source = call(
+                    "send",
+                    json!({"group_id":gid,"by":"user","to":["web"],
+                    "text":format!("CONTINUOUS_REPORT_{round}"),"message_mode":"mail"}),
+                )
+                .await
+                .expect("next report");
+                let event_id = source["event"]["id"].as_str().expect("next report id");
+                call(
+                    "message_deliver",
+                    json!({"group_id":gid,"by":"user",
+                    "source_event_id":event_id,"actor_ids":["web"]}),
+                )
+                .await
+                .expect("next report promotion");
+                assert!(matches!(
+                    deliver_pending(&state, gid, "web")
+                        .await
+                        .expect("next handoff"),
+                    DeliveryOutcome::Submitted
+                ));
+                assert!(matches!(
+                    deliver_pending(&state, gid, "web")
+                        .await
+                        .expect("duplicate poll"),
+                    DeliveryOutcome::Idle
+                ));
+                assert_eq!(
+                    count.load(Ordering::SeqCst),
+                    round,
+                    "duplicate or missing round {round}"
+                );
+                assert_eq!(
+                    browser.info(surface_key()).await["started_at"],
+                    initial_browser["started_at"],
+                    "browser restarted for an ordinary next report"
+                );
+                assert!(
+                    !IN_FLIGHT
+                        .get()
+                        .expect("guard store")
+                        .lock()
+                        .expect("guard lock")
+                        .contains(&key(gid, "web")),
+                    "completed turn retained the browser guard"
+                );
+            }
+            let all =
+                ledger::read_all(&store.ledger_path(gid).expect("ledger")).expect("all rounds");
+            assert_eq!(all.iter().filter(|e| e.kind == "chat.message").count(), 20);
+            assert_eq!(
+                all.iter()
+                    .filter(|e| e.kind == "runtime.delivery" && e.data["state"] == "accepted")
+                    .count(),
+                20
+            );
+            let unread = call(
+                "inbox_peek",
+                json!({"group_id":gid,"actor_id":"web","by":"web"}),
+            )
+            .await
+            .expect("unread after rounds");
+            assert_eq!(
+                unread["messages"].as_array().expect("unread").len(),
+                20,
+                "delivery consumed Mail"
+            );
             eprintln!(
-                "REAL_CHROME_AND_DAEMON: busy -> failed/retryable -> idle -> one verified submission; Mail remains unread"
+                "REAL_CHROME_AND_DAEMON: 20 sequential handoffs, 20 duplicate polls, one browser, no retained claim, Mail unread; first busy turn recovered"
             );
         };
         // Cleanup runs even if a test assertion panics in the task.

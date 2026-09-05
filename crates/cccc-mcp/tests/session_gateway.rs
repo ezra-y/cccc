@@ -522,3 +522,141 @@ async fn chat_first_creates_two_groups_and_manages_the_named_local_peer() {
         .await;
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_gateways_keep_ten_groups_separate_and_create_once() {
+    use std::sync::Arc;
+    use tokio::sync::{Barrier, Mutex};
+    use tokio::task::JoinSet;
+    let temp = tempfile::tempdir().expect("isolated concurrency directory");
+    let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+    home.initialize().expect("initialize");
+    let home_for_daemon = home.clone();
+    let daemon_task = tokio::spawn(async move { cccc_daemon::run(home_for_daemon).await });
+    let client = DaemonClient::new(home.clone());
+    for _ in 0..100 {
+        if client
+            .call(&DaemonRequest {
+                v: 1,
+                op: "ping".into(),
+                args: Map::new(),
+            })
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let project = temp.path().join("project");
+    std::fs::create_dir(&project).expect("project");
+    let home_for_work = home.clone();
+    let mut check = tokio::spawn(async move {
+        for width in [2, 4, 6, 10] {
+            let barrier = Arc::new(Barrier::new(width));
+            let ids = Arc::new(Mutex::new(vec![String::new(); width]));
+            let mut tasks = JoinSet::new();
+            for slot in 0..width {
+                let home = home_for_work.clone();
+                let path = project.clone();
+                let barrier = Arc::clone(&barrier);
+                let ids = Arc::clone(&ids);
+                tasks.spawn(async move {
+                    let mut g=Gateway::start(&home);
+                    let session=format!("synthetic-{width}-{slot}");
+                    let create=json!({"path":path,"title":format!("concurrent-{width}-{slot}")});
+                    barrier.wait().await;
+                    let result=g.call(request("cccc_group_create",create.clone(),Some(&session))).await;
+                    let id=payload(&result)["group_id"].as_str().expect("created group").to_owned();
+                    let retry=g.call(request("cccc_group_create",create,Some(&session))).await;
+                    assert_eq!(payload(&retry)["group_id"],id,"retry created a second group");
+                    ids.lock().await[slot]=id.clone();
+                    barrier.wait().await;
+                    let foreign=ids.lock().await[(slot+1)%width].clone();
+                    for round in 0..5 {
+                        let state=g.call(request("cccc_bootstrap",json!({}),Some(&session))).await;
+                        assert_eq!(payload(&state)["session"]["group_id"],id,"binding drifted on round {round}");
+                        let wrong=g.call(request("cccc_bootstrap",json!({"group_id":foreign}),Some(&session))).await;
+                        assert_eq!(error(&wrong),"group_scope_mismatch");
+                    }
+                    let report=format!("REPORT_{width}_{slot}");
+                    daemon(&DaemonClient::new(home.clone()),"send",json!({"group_id":id,"by":"user","to":["chat-foreman"],"text":report,"message_mode":"mail"})).await;
+                    let mail=g.call(request("cccc_inbox_read",json!({}),Some(&session))).await;
+                    let messages=payload(&mail)["messages"].as_array().expect("Mail");
+                    assert_eq!(messages.len(),1,"wrong group's inbox or duplicate report");
+                    assert_eq!(messages[0]["data"]["text"],report);
+                    g.stop().await;
+                    id
+                });
+            }
+            let mut seen = std::collections::HashSet::new();
+            while let Some(result) = tasks.join_next().await {
+                assert!(
+                    seen.insert(result.expect("concurrent request task")),
+                    "two sessions got the same group"
+                );
+            }
+            assert_eq!(seen.len(), width);
+            eprintln!(
+                "CONCURRENT_GATEWAY width={width} processes={width} unique_groups={width} calls={} isolation=PASS retry=PASS mail=PASS",
+                width * 13
+            );
+        }
+        let barrier = Arc::new(Barrier::new(10));
+        let mut tasks = JoinSet::new();
+        for _ in 0..10 {
+            let home = home_for_work.clone();
+            let path = project.clone();
+            let barrier = Arc::clone(&barrier);
+            tasks.spawn(async move {
+                let mut g = Gateway::start(&home);
+                barrier.wait().await;
+                let result = g
+                    .call(request(
+                        "cccc_group_create",
+                        json!({"path":path,"title":"one-racing-chat"}),
+                        Some("one-synthetic-chat"),
+                    ))
+                    .await;
+                let id = payload(&result)["group_id"]
+                    .as_str()
+                    .expect("race group")
+                    .to_owned();
+                g.stop().await;
+                id
+            });
+        }
+        let mut ids = std::collections::HashSet::new();
+        while let Some(result) = tasks.join_next().await {
+            ids.insert(result.expect("race task"));
+        }
+        assert_eq!(ids.len(), 1, "concurrent retries created duplicate groups");
+        assert_eq!(
+            GroupStore::new(home_for_work)
+                .expect("store")
+                .list()
+                .expect("groups")
+                .len(),
+            23
+        );
+        eprintln!(
+            "CONCURRENT_SAME_CHAT width=10 created_groups=1 PASS; synthetic identities, not hosted ChatGPT proof"
+        );
+    });
+    let result = tokio::time::timeout(Duration::from_secs(90), &mut check).await;
+    if result.is_err() {
+        check.abort();
+        let _ = check.await;
+    }
+    let _ = client
+        .call(&DaemonRequest {
+            v: 1,
+            op: "shutdown".into(),
+            args: Map::new(),
+        })
+        .await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+    result
+        .expect("bounded concurrency test")
+        .expect("concurrency assertions");
+}
