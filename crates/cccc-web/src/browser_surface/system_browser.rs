@@ -35,6 +35,7 @@ pub(super) struct SystemBrowserLaunch {
     channel: &'static str,
     cdp_port: u16,
     background: bool,
+    headless: bool,
     width: u32,
     height: u32,
     display: Option<VirtualDisplay>,
@@ -46,14 +47,23 @@ pub(super) struct SystemBrowserLaunch {
 }
 
 impl SystemBrowserLaunch {
-    pub(super) async fn prepare(width: u32, height: u32, background: bool) -> Result<Self> {
+    pub(super) async fn prepare(
+        width: u32,
+        height: u32,
+        background: bool,
+        headless: bool,
+    ) -> Result<Self> {
         let (executable, channel) = find_system_browser().ok_or_else(|| {
             anyhow::anyhow!(
                 "Chrome, Microsoft Edge, or Chromium is required for projected browser authentication"
             )
         })?;
         let cdp_port = initial_cdp_port()?;
-        let display = VirtualDisplay::start(width, height).await?;
+        let display = if headless {
+            None
+        } else {
+            VirtualDisplay::start(width, height).await?
+        };
         #[cfg(target_os = "linux")]
         let (vnc, vnc_error) = match &display {
             Some(display) => ProjectedVncServer::start(display.name()).await,
@@ -66,6 +76,7 @@ impl SystemBrowserLaunch {
             channel,
             cdp_port,
             background,
+            headless,
             width,
             height,
             display,
@@ -88,7 +99,11 @@ impl SystemBrowserLaunch {
             .viewport(None)
             .arg(window_position(self.background))
             .arg("--force-device-scale-factor=1");
-        config = config.with_head();
+        config = if self.headless {
+            config.new_headless_mode()
+        } else {
+            config.with_head()
+        };
         if let Some(display) = &self.display {
             config = config
                 .env("DISPLAY", display.name())
@@ -209,6 +224,9 @@ impl SystemBrowserLaunch {
             window_position(self.background).to_owned(),
             "--force-device-scale-factor=1".to_owned(),
         ];
+        if self.headless {
+            args.push("--headless=new".to_owned());
+        }
         args.extend(extra_args);
         args
     }
@@ -225,7 +243,7 @@ impl SystemBrowserLaunch {
             "browser_binary":self.executable,
             "channel":self.channel,
             "profile_dir":profile,
-            "visibility":if self.background||self.display.is_some(){"background"}else{"visible"},
+            "visibility":if self.headless {"headless"}else if self.background||self.display.is_some(){"background"}else{"visible"},
             "display":self.display.as_ref().map_or("", VirtualDisplay::name),
             "display_owned":self.display.is_some(),
             "display_owner":self.display.as_ref().map_or("", |_| "cccc_xvfb")
@@ -911,6 +929,7 @@ mod tests {
             channel: "chrome",
             cdp_port: 9222,
             background: false,
+            headless: false,
             width: 1366,
             height: 900,
             display: None,
@@ -928,6 +947,28 @@ mod tests {
         assert_eq!(metadata["cdp_port"], 9222);
         assert_eq!(metadata["channel"], "chrome");
         assert_eq!(metadata["visibility"], "visible");
+        let mut headless = launch;
+        headless.headless = true;
+        assert_eq!(headless.metadata(42, profile)["visibility"], "headless");
+        #[cfg(target_os = "macos")]
+        {
+            let args = headless.browser_args(profile, Vec::new());
+            assert!(args.iter().any(|arg| arg == "--headless=new"));
+            assert!(
+                !args
+                    .iter()
+                    .any(|arg| arg.contains("mock-keychain") || arg.contains("password-store")),
+                "system profile must keep its normal credential storage"
+            );
+            headless.headless = false;
+            assert!(
+                !headless
+                    .browser_args(profile, Vec::new())
+                    .iter()
+                    .any(|arg| arg.starts_with("--headless"))
+            );
+        }
+
         assert_eq!(metadata["display_owned"], false);
         assert_eq!(metadata["profile_dir"], profile.to_string_lossy().as_ref());
     }
@@ -993,6 +1034,7 @@ mod tests {
             channel: "chrome",
             cdp_port: 9222,
             background: false,
+            headless: false,
             width: 1366,
             height: 900,
             display: None,

@@ -99,9 +99,14 @@ pub(super) async fn ensure_open_for_actor(
     let target = super::web_model_delivery_state::target(state, group_id, actor_id)?;
     let open_url = browser_open_url(&target, provider_url(&provider));
     let profile = browser_profile_path(state.home.root(), group_id, actor_id)?;
+    let headless = use_headless_browser(
+        std::env::var("CCCC_WEB_MODEL_BROWSER_HEADLESS")
+            .ok()
+            .as_deref(),
+    );
     state
         .browser_surfaces
-        .ensure_open_system(surface_key(), &profile, &open_url, width, height)
+        .ensure_open_system(surface_key(), &profile, &open_url, width, height, headless)
         .await
         .map_err(|error| ApiError::bad(format!("{error:#}")))?;
     let session_key = surface_key();
@@ -825,6 +830,33 @@ mod wait_status_tests {
             let actual = super::deferred_action(evidence);
             assert_eq!(actual.0, action);
             assert!(!actual.1.is_empty() && !actual.2.is_empty());
+        }
+    }
+}
+
+// Reuse the original opt-in without changing Rust's verified default. Browser
+// startup alone does not prove that a provider accepts authenticated headless use.
+fn use_headless_browser(configured: Option<&str>) -> bool {
+    matches!(
+        configured
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on" | "enabled"
+    )
+}
+
+#[cfg(test)]
+mod launch_policy_tests {
+    #[test]
+    fn original_headless_override_does_not_replace_the_verified_default() {
+        assert!(!super::use_headless_browser(None));
+        for value in ["", "unknown", "0", "false", " NO ", "off", "disabled"] {
+            assert!(!super::use_headless_browser(Some(value)));
+        }
+        for value in ["1", "true", " YES ", "on", "enabled"] {
+            assert!(super::use_headless_browser(Some(value)));
         }
     }
 }

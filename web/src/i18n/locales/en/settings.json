@@ -30,7 +30,9 @@
     "globalScopeTitle": "Global Scope",
     "globalScopeContent": "Applies to your whole CCCC instance (daemon + Web). These settings affect all groups unless overridden.",
     "globalLockedTitle": "Admin access required",
-    "globalLockedContent": "Global settings are admin-only. Open Settings from a group to manage group-scoped settings, or sign in with an admin Access Token."
+    "globalLockedContent": "Global settings are admin-only. Open Settings from a group to manage group-scoped settings, or sign in with an admin Access Token.",
+    "workspaceSettings": "Workspace Settings",
+    "sections": "Sections"
   },
   "account": {
     "title": "CCCC Account",
@@ -1198,7 +1200,17 @@
         "notOpen": "Not open",
         "signedIn": "Signed in",
         "open": "Browser open",
-        "openSignInNeeded": "Open, sign-in needed"
+        "openSignInNeeded": "Open, sign-in needed",
+        "title": "Shared ChatGPT browser",
+        "description": "Groups share one dedicated browser profile. Each group still delivers to its own saved conversation.",
+        "hideNote": "Automatic delivery does not require an open preview or a foreground window.",
+        "currentChat": "Current browser conversation",
+        "currentChatNone": "No conversation URL read yet",
+        "noActor": "Select a group with a web Foreman to inspect",
+        "stateLabel": "Browser status",
+        "viewNote": "Preview and delivery are separate",
+        "viewOnlyNote": "Showing or hiding the preview does not start or stop the browser. Delivery continues while hidden.",
+        "previewClosed": "The browser is closed. Use Open sign-in when needed; showing the preview does not launch it."
       },
       "mcp": {
         "urlNotCreated": "MCP URL not created",
@@ -1247,7 +1259,9 @@
         "bindTarget": "Save an existing ChatGPT conversation, paste a target URL, or choose new-chat delivery.",
         "ready": "Ready for browser delivery."
       },
-      "queue": { "queued": "{{count}} queued" },
+      "queue": {
+        "queued": "{{count}} queued"
+      },
       "warnings": {
         "rotateOldConnector": "Rotate this older connector once to generate a copyable ChatGPT MCP URL.",
         "localMcpUrl": "MCP URL is local-only. Browser-hosted models need a public HTTPS URL.",
@@ -1280,7 +1294,14 @@
         "recorded": "recorded",
         "lastError": "Last error",
         "pendingNewChat": "Pending new chat",
-        "mode": "Mode"
+        "mode": "Mode",
+        "callbackNote": "Member reports use the existing automatic delivery. Pause collaboration with the group’s pause or stop controls.",
+        "closeBrowserWarning": "Closing the browser affects every group using it. Use Hide preview to close only the view.",
+        "currentTarget": "Saved target",
+        "lastMcpError": "Last tool error",
+        "mcpUrlId": "Connector ID",
+        "profileDir": "Browser profile directory",
+        "remote": "Last tool call"
       },
       "browserSurface": {
         "starting": "Opening ChatGPT...",
@@ -1294,7 +1315,7 @@
       },
       "buttons": {
         "refresh": "Refresh",
-        "openWebAccess": "Open Web Access",
+        "openWebAccess": "Public access settings",
         "rotateMcpUrl": "Rotate MCP URL",
         "revokeMcpUrl": "Revoke MCP URL",
         "copyMcpUrl": "Copy MCP URL",
@@ -1305,7 +1326,21 @@
         "reloadChatGpt": "Reload ChatGPT page",
         "checkStatus": "Check status",
         "closeBrowser": "Close browser",
-        "copyBindingInstructions": "Copy connection instructions"
+        "copyBindingInstructions": "Copy connection instructions",
+        "addForeman": "Add Foreman",
+        "addMember": "Add member",
+        "changeForeman": "Change Foreman",
+        "cancelTargetEdit": "Cancel changes",
+        "copyInstructions": "Copy connection instructions",
+        "guidance": "Foreman guidance",
+        "hideSurface": "Hide preview",
+        "viewSurface": "Show preview",
+        "localModelOption": "Local model",
+        "webModelOption": "Web model",
+        "newGroup": "New group",
+        "openLogin": "Open sign-in",
+        "readCurrentChat": "Read current conversation",
+        "disconnectChat": "Disconnect chat"
       },
       "activity": {
         "notSeenYet": "not seen yet",
@@ -1315,7 +1350,9 @@
         "seen": "seen",
         "seenAt": "seen {{time}}"
       },
-      "copyLabels": { "mcpUrl": "MCP URL" },
+      "copyLabels": {
+        "mcpUrl": "MCP URL"
+      },
       "notices": {
         "connectorRotated": "Connector rotated. Previous connector revoked.",
         "connectorCreated": "Connector created.",
@@ -1328,22 +1365,30 @@
         "targetSavedExisting": "Saved. Next delivery uses this ChatGPT chat.",
         "targetSavedNewChat": "Saved. Next delivery starts a new ChatGPT chat.",
         "copied": "{{label}} copied.",
-        "copyFailed": "Copy failed."
+        "copyFailed": "Copy failed.",
+        "browserChecked": "Browser status checked",
+        "currentChatRead": "URL read; review it before saving",
+        "signInOpened": "Dedicated browser opened",
+        "targetEditCancelled": "Changes cancelled",
+        "chatDisconnected": "The selected group’s chat connection was disconnected."
       },
       "errors": {
         "loadConnectorFailed": "Failed to load ChatGPT Web Model MCP URL.",
         "loadBrowserSessionFailed": "Failed to load ChatGPT browser session.",
         "openBrowserFailed": "Failed to open ChatGPT browser.",
-        "loadActorsFailed": "Failed to load actors.",
+        "loadActorsFailed": "Failed to load members.",
         "loadGroupsFailed": "Failed to load groups.",
         "loadSettingsFailed": "Failed to load ChatGPT Web Model settings.",
-        "selectActorFirst": "Select a group with the ChatGPT Web Model actor first.",
-        "createConnectorFailed": "Failed to create connector.",
-        "revokeConnectorFailed": "Failed to revoke connector.",
+        "selectActorFirst": "Select a group with a web Foreman first.",
+        "createConnectorFailed": "Failed to create the connector.",
+        "revokeConnectorFailed": "Failed to revoke the connector.",
         "restartBrowserFailed": "Failed to restart ChatGPT browser.",
         "closeBrowserFailed": "Failed to close ChatGPT browser session.",
         "bindConversationFailed": "Failed to bind ChatGPT conversation.",
-        "bindingRequestFailed": "Failed to issue the one-time connection code."
+        "bindingRequestFailed": "Failed to issue the one-time connection code.",
+        "loadBrowserFailed": "Failed to read browser status.",
+        "loadConnectorsFailed": "Failed to read connectors.",
+        "memberUnavailable": "The selected member no longer exists. Refresh the group."
       },
       "nextAction": {
         "open_chatgpt": "Open ChatGPT",
@@ -1356,15 +1401,140 @@
         "login_chatgpt": "Sign in to ChatGPT",
         "resolve_draft": "Resolve the draft",
         "wait_for_reply": "Wait for the current reply",
-        "inspect_browser": "Check browser readiness"
+        "inspect_browser": "Check browser readiness",
+        "bind_chat": "Set the return conversation"
       },
       "nextActionReason": {
         "resolve_draft": "The report is retained. Resolve the input draft to resume delivery.",
         "wait_for_reply": "The current response will not be interrupted. Delivery resumes when it ends.",
         "inspect_browser": "Readiness is not confirmed. Check the browser; a missing composer does not prove that you are signed out.",
-        "login_chatgpt": "Sign in with this browser before delivering the queued report."
+        "login_chatgpt": "Sign in with this browser before delivering the queued report.",
+        "bind_chat": "Choose and save the target conversation. This does not change the conversation identity binding.",
+        "open_chatgpt": "Open the dedicated browser to sign in or inspect the page.",
+        "wait_for_chat_bind": "The report was submitted; wait for the new conversation URL rather than sending again.",
+        "inspect_error": "Delivery is unconfirmed. Inspect the original conversation before retrying.",
+        "retry_delivery": "The report is retained. Check browser readiness before resuming delivery."
       },
-      "common": { "none": "none", "notSet": "Not set" }
+      "common": {
+        "none": "none",
+        "notSet": "Not set",
+        "loading": "Loading…"
+      },
+      "reference": {
+        "mcpCopyHint": "Copy this actor-bound MCP URL into ChatGPT. CCCC marks the app seen only after ChatGPT calls a CCCC tool.",
+        "mcpCreateHint": "Create this actor-bound MCP URL, then copy it into a custom ChatGPT app.",
+        "mcpLastCallFailed": "Last call failed",
+        "mcpNeedsRotation": "Needs rotation",
+        "mcpNotCreated": "MCP URL not created",
+        "mcpRotateHint": "This older connector does not expose a copyable URL. Rotate it once to create a fresh actor-bound MCP URL.",
+        "mcpWaitingFirstCall": "Waiting for first CCCC tool call",
+        "instructionCreateApp": "Create an app named CCCC, paste the copied MCP URL, and set Authentication to No Auth.",
+        "instructionEnableConnector": "Enable the CCCC connector in a GPT-5.x chat. On the first CCCC tool call, choose Always allow if ChatGPT offers it.",
+        "instructionOpenSettings": "In ChatGPT, open Settings > Apps > Advanced settings > Create app.",
+        "permissionDocsLink": "OpenAI app permissions",
+        "permissionHint": "When ChatGPT first calls the CCCC app, approve the app permission card. Choose Always allow if it is available; managed workspaces may hide or control that option.",
+        "title": "Original setup and permission notes",
+        "description": "The original direct-connection setup is retained for reference. With the existing OpenAI Tunnel connector, groups do not need separate apps.",
+        "summaryTitle": "Original connection status",
+        "chatgpt": "Dedicated browser",
+        "chatgptClosed": "Closed",
+        "chatgptSignInNeeded": "Check sign-in",
+        "chatgptSignedIn": "Composer ready",
+        "mcpApp": "Tool connection",
+        "mcpBound": "Chat bound to this group",
+        "mcpTitle": "Original direct connection URL",
+        "mcpSeenAt": "Last call {{time}}",
+        "member": "Web Foreman",
+        "memberDuplicate": "{{count}} web members",
+        "memberMissing": "No web Foreman",
+        "memberRunning": "Running",
+        "memberStopped": "Stopped",
+        "optionalNote": "These URLs and public-access settings apply only to the original direct connection.",
+        "returnNewChat": "New chat on next delivery",
+        "returnNone": "No return URL saved",
+        "returnSaved": "Return URL saved",
+        "returnTarget": "Return target",
+        "warningLocalUrl": "A localhost URL is not directly reachable from the cloud; this does not apply to the existing tunnel connector.",
+        "warningNonHttps": "The original direct cloud connection requires an HTTPS URL.",
+        "warningRotate": "Rotation revokes the previous connector; confirm before proceeding.",
+        "webAccess": "Direct public access",
+        "webAccessNeedsSetup": "Direct access not configured",
+        "webAccessReady": "Direct URL configured",
+        "webAccessNote": "Only for the original direct cloud connection; existing tunnel bindings do not depend on it."
+      },
+      "title": "ChatGPT connections",
+      "description": "Configure the shared browser, then choose each group’s Foreman and return conversation.",
+      "editor": {
+        "title": "Return conversation",
+        "description": "Review the URL before saving. Saving sets the return target; it does not create a new conversation identity binding.",
+        "choiceCurrent": "Use the current browser conversation",
+        "choiceCurrentDetail": "Read the current conversation explicitly, then verify it before saving.",
+        "choicePasted": "Paste an existing conversation URL",
+        "choicePastedDetail": "Use a complete ChatGPT conversation URL containing /c/.",
+        "choiceNew": "Create a chat on the next delivery",
+        "choiceNewDetail": "This only saves the choice. The next report creates a chat, which still needs its connector enabled and identity bound.",
+        "currentChatAvailable": "Current URL: {{target}}",
+        "currentChatUnavailable": "The current page has no usable ChatGPT conversation URL.",
+        "noUnsaved": "No unsaved changes",
+        "unsaved": "URL changes are not saved",
+        "urlInvalid": "Enter a complete https://chatgpt.com/c/... conversation URL.",
+        "urlLabel": "Conversation URL"
+      },
+      "groupDetail": {
+        "changeForemanHint": "Local Foremen use the same Change Foreman editor.",
+        "chatToGroupTitle": "Chat → group",
+        "groupToChatTitle": "Group → chat",
+        "foremanRole": "Foreman",
+        "identityBound": "Identity bound",
+        "identityNotBound": "Identity not bound",
+        "identityNote": "This grants the conversation access to this group; it does not prove a report was returned.",
+        "lastDelivery": "Last delivery",
+        "lastDeliveryNone": "No delivery recorded",
+        "localForemanNote": "A local model leads this group; ChatGPT binding is not required.",
+        "memberLabel": "Web member",
+        "members": "Other members",
+        "membersUnit": "{{count}} members",
+        "multipleWarning": "Found {{count}} web members; review the Foreman configuration.",
+        "noForeman": "No Foreman yet",
+        "queue": "Queued reports",
+        "returnSaved": "Return URL saved",
+        "returnNotSaved": "Return URL not saved",
+        "returnNewChat": "New chat on next delivery",
+        "returnNote": "Return delivery also requires browser sign-in and a working connector. Verify it with an actual tool receipt.",
+        "running": "Running",
+        "stopped": "Stopped",
+        "runtime": "Model type",
+        "runtimeLocal": "Local model",
+        "runtimeWeb": "Web model",
+        "runtimeNone": "Not set",
+        "savedAt": "Saved {{time}}"
+      },
+      "groups": {
+        "title": "Group overview",
+        "description": "Select a group to manage its Foreman and connection. Selecting another row never changes chat bindings.",
+        "empty": "No groups yet",
+        "identityBound": "Chat bound",
+        "notConnected": "No chat binding",
+        "urlReady": "Connector created"
+      },
+      "browserMode": {
+        "visible": "Windowed",
+        "background": "Background window",
+        "headless": "Headless"
+      },
+      "deliveryMode": {
+        "standard": "Standard delivery",
+        "image_compat": "Image-compatible delivery"
+      },
+      "deliveryState": {
+        "submitted": "Delivered to page",
+        "submitting": "Delivering",
+        "failed": "Delivery failed",
+        "deferred": "Waiting for page",
+        "submission_ambiguous": "Delivery unconfirmed",
+        "completion_ambiguous": "Awaiting delivery confirmation",
+        "pending_new_chat_bind": "Awaiting new chat URL"
+      }
     }
   },
   "webAccess": {

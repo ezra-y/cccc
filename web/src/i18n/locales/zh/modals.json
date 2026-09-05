@@ -134,7 +134,7 @@
     "currentFocus": "当前焦点",
     "currentFocusPlaceholder": "团队当前最重要的焦点是什么？",
     "roles": "角色分工",
-    "rolesPlaceholder": "领班, 审阅, 实现",
+    "rolesPlaceholder": "组长, 审阅, 实现",
     "collaborationMode": "协作模式",
     "collaborationPlaceholder": "团队如何协作推进？",
     "noOverview": "尚未设置总览",

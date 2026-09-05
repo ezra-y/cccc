@@ -75,7 +75,7 @@ pub(super) struct Session {
 #[derive(Clone, Copy)]
 enum BrowserMode {
     Headless,
-    System { background: bool },
+    System { background: bool, headless: bool },
 }
 
 struct OpenRequest<'a> {
@@ -205,6 +205,7 @@ impl BrowserSurfaces {
         url: &str,
         width: u32,
         height: u32,
+        headless: bool,
     ) -> Result<Value> {
         self.open_with(OpenRequest {
             key,
@@ -214,7 +215,10 @@ impl BrowserSurfaces {
             height,
             storage_state: None,
             reuse_existing: true,
-            mode: BrowserMode::System { background: false },
+            mode: BrowserMode::System {
+                background: false,
+                headless,
+            },
         })
         .await
     }
@@ -259,7 +263,10 @@ impl BrowserSurfaces {
             height,
             storage_state,
             reuse_existing: false,
-            mode: BrowserMode::System { background: true },
+            mode: BrowserMode::System {
+                background: true,
+                headless: false,
+            },
         })
         .await
     }
@@ -335,9 +342,10 @@ impl BrowserSurfaces {
         let mut profile_lease = ProfileLease::acquire(profile).await?;
         let mut system_browser = match mode {
             BrowserMode::Headless => None,
-            BrowserMode::System { background } => {
-                Some(SystemBrowserLaunch::prepare(width, height, background).await?)
-            }
+            BrowserMode::System {
+                background,
+                headless,
+            } => Some(SystemBrowserLaunch::prepare(width, height, background, headless).await?),
         };
         let proxy_args = BrowserProxy::from_env()?
             .map(|proxy| proxy.chromium_args())
