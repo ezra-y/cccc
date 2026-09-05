@@ -47,6 +47,7 @@ pub struct HeadlessStatus {
 #[derive(Debug)]
 struct ActiveTurn {
     turn_id: String,
+    started_at: String,
 }
 
 struct Session {
