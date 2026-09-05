@@ -247,7 +247,9 @@ impl SessionGuard {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(key.clone());
-        inserted.then_some(Self { sessions, key })
+        // Construct an owning guard only after acquisition succeeds. Eager
+        // then_some drops the rejected guard and releases the current owner.
+        inserted.then(|| Self { sessions, key })
     }
 }
 
@@ -1332,6 +1334,32 @@ mod retry_integration_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::time::{Duration, timeout};
 
+    #[test]
+    fn rejected_session_guard_cannot_release_the_current_owner() {
+        for registry in [&WORKERS, &IN_FLIGHT] {
+            let key = format!("guard-contention-{}", uuid::Uuid::new_v4());
+            let held = SessionGuard::acquire(registry, key.clone()).expect("first owner");
+            for _ in 0..10 {
+                assert!(
+                    SessionGuard::acquire(registry, key.clone()).is_none(),
+                    "rejected acquisition erased the live owner's registration"
+                );
+                assert!(
+                    registry
+                        .get()
+                        .expect("registry")
+                        .lock()
+                        .expect("lock")
+                        .contains(&key),
+                    "a rejected contender released another worker's guard"
+                );
+            }
+            drop(held);
+            let next = SessionGuard::acquire(registry, key).expect("owner released normally");
+            drop(next);
+        }
+    }
+
     #[tokio::test]
     async fn real_browser_deferral_resumes_the_same_report_once() {
         if crate::system_browser_path().is_none() {
@@ -1378,7 +1406,7 @@ mod retry_integration_tests {
         let received = Arc::clone(&count);
         let page = r#"<!doctype html><html><body>
 <button style="position:fixed;left:10px;top:10px;width:130px;height:36px" type="button" onclick="document.querySelector('#busy').remove();this.remove()">Finish current answer</button>
-<button style="position:fixed;left:350px;top:10px;width:130px;height:36px" type="button" onclick="document.querySelector('textarea').value='';this.remove()">Resolve own test draft</button>
+<button style="position:fixed;left:350px;top:10px;width:130px;height:36px" type="button" onclick="document.querySelector('textarea').value=''">Resolve own test draft</button>
 <button id="busy" type="button" aria-label="Stop streaming" style="position:fixed;left:180px;top:10px">Stop</button>
 <textarea id="prompt-textarea" placeholder="Message" style="position:fixed;left:10px;top:70px;width:650px;height:120px">unsent human draft</textarea>
 <button data-testid="send-button" type="button" aria-label="Send prompt" style="position:fixed;left:10px;top:230px;width:100px;height:35px" onclick="const t=document.querySelector('textarea');if(!t.value)return;const d=document.createElement('div');d.dataset.messageAuthorRole='user';d.textContent=t.value;d.style='margin-top:290px';document.body.append(d);t.value='';fetch('/received',{method:'POST'})">Send</button>
@@ -1623,8 +1651,59 @@ mod retry_integration_tests {
                 20,
                 "delivery consumed Mail"
             );
+            // Repeated real events call ensure_worker while one owner is polling.
+            // Losing admission must not remove that owner or reset its idle cadence.
+            browser
+                .command(surface_key(), &json!({"t":"click","x":100,"y":110}))
+                .await
+                .expect("focus fixture composer");
+            browser
+                .command(surface_key(), &json!({"t":"text","text":"PRESERVE_DRAFT"}))
+                .await
+                .expect("fixture draft");
+            let final_source=call("send",json!({"group_id":gid,"by":"user","to":["web"],"text":"CONTENDED_WORKER_REPORT","message_mode":"mail"})).await.expect("contended Mail");
+            let final_id = final_source["event"]["id"].as_str().expect("event");
+            call(
+                "message_deliver",
+                json!({"group_id":gid,"by":"user","source_event_id":final_id,"actor_ids":["web"]}),
+            )
+            .await
+            .expect("promote contended Mail");
+            for _ in 0..20 {
+                ensure_worker(state.clone(), gid.to_owned(), "web".into()).await;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let log =
+                ledger::read_all(&store.ledger_path(gid).expect("ledger")).expect("worker events");
+            let attempts = log
+                .iter()
+                .filter(|event| {
+                    event.kind == "web_model.browser_delivery.submitting"
+                        && event.data["event_ids"]
+                            .as_array()
+                            .is_some_and(|ids| ids.iter().any(|id| id == final_id))
+                })
+                .count();
+            assert_eq!(
+                attempts, 1,
+                "duplicate worker admissions bypassed the existing idle retry interval"
+            );
+            assert_eq!(count.load(Ordering::SeqCst), 20, "draft was overwritten");
+            browser
+                .command(surface_key(), &json!({"t":"click","x":390,"y":28}))
+                .await
+                .expect("clear fixture draft");
+            timeout(Duration::from_secs(8), async {
+                while count.load(Ordering::SeqCst) != 21 {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("original worker resumes queued Mail without another source message");
+            assert_eq!(count.load(Ordering::SeqCst), 21);
             eprintln!(
-                "REAL_CHROME_AND_DAEMON: 20 sequential handoffs, 20 duplicate polls, one browser, no retained claim, Mail unread; first busy turn recovered"
+                "REAL_CHROME_AND_DAEMON: 20 handoffs; 20 duplicate worker admissions preserve one polling owner; draft release delivers original report once"
             );
         };
         // Cleanup runs even if a test assertion panics in the task.
