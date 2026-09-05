@@ -774,3 +774,74 @@ async fn shared_web_model_operations_preserve_busy_drafts_and_serialize_manual_n
     server.abort();
     eprintln!("shared browser launched, busy draft preserved, manual command serialized");
 }
+
+#[tokio::test]
+async fn guest_composer_is_not_authenticated_delivery() {
+    require_chrome!();
+    let (url,server)=local_page(r#"<!doctype html><body><button data-mobile-auth-entry-action="login">登录</button><main><form><textarea id="prompt-textarea" placeholder="Message" style="width:500px;height:100px"></textarea><button type="button" aria-label="Send prompt" onclick="window.sent=(window.sent||0)+1">Send</button></form></main></body>"#).await;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manager = std::sync::Arc::new(BrowserSurfaces::default());
+    manager
+        .open("guest-check", &temp.path().join("profile"), &url, 800, 600)
+        .await
+        .expect("browser");
+    let work = std::sync::Arc::clone(&manager);
+    let outcome=tokio::spawn(async move {
+        let readiness=work.prompt_readiness("guest-check").await.expect("readiness");
+        assert_eq!(readiness["ready"],false,"guest composer was mistaken for a signed-in browser");
+        assert_eq!(readiness["login_required"],true);
+        let result=work.submit_prompt_with_attachment("guest-check",&url,"must not enter guest chat",None,"guest-report").await.expect("preflight");
+        assert!(matches!(result,prompt_submission::PromptSubmissionOutcome::Deferred(_)),"guest report was submitted");
+        let page=work.sessions.lock().await.get("guest-check").expect("session").page.clone();
+        let untouched:bool=page.evaluate("!window.sent && document.querySelector('textarea').value === ''").await.expect("read").into_value().expect("bool");
+        assert!(untouched,"guest preflight touched the composer or Send");
+        page.evaluate("document.querySelector('[data-mobile-auth-entry-action]').remove();document.querySelector('main').insertAdjacentHTML('beforeend','<div data-message-author-role=assistant><button data-testid=login-button>Log in</button></div>')").await.expect("fixture login recovery");
+        assert_eq!(work.prompt_readiness("guest-check").await.expect("recovered readiness")["ready"],true,"quoted login text inside a message blocked signed-in use");
+        eprintln!("REAL_CHROME: guest login controls block readiness and send; message content is not authentication state");
+    }).await;
+    let _ = manager.close("guest-check").await;
+    server.abort();
+    outcome.expect("guest assertions");
+}
+
+#[tokio::test]
+async fn cross_chat_delivery_does_not_navigate_away_from_a_draft() {
+    require_chrome!();
+    let (source,source_server)=local_page(r#"<!doctype html><textarea id="prompt-textarea" style="width:500px;height:100px">UNSENT_A_DRAFT</textarea>"#).await;
+    let (destination,destination_server)=local_page(r#"<!doctype html><textarea id="prompt-textarea" style="width:500px;height:100px"></textarea><button aria-label="Send prompt" onclick="const t=document.querySelector('textarea');const p=document.createElement('div');p.dataset.messageAuthorRole='user';p.textContent=t.value;document.body.append(p);t.value='';window.sent=(window.sent||0)+1">Send</button>"#).await;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manager = std::sync::Arc::new(BrowserSurfaces::default());
+    manager
+        .open(
+            "draft-routing",
+            &temp.path().join("profile"),
+            &source,
+            800,
+            600,
+        )
+        .await
+        .expect("browser");
+    let work = std::sync::Arc::clone(&manager);
+    let outcome=tokio::spawn(async move {
+        let result=work.submit_prompt_with_attachment("draft-routing",&destination,"REPORT_B",None,"cross-draft").await.expect("submission check");
+        assert!(matches!(result,prompt_submission::PromptSubmissionOutcome::Deferred(_)),"B delivery navigated away from A's unsent draft");
+        let page=work.sessions.lock().await.get("draft-routing").expect("session").page.clone();
+        assert_eq!(page.url().await.expect("url").expect("URL"),format!("{source}/"));
+        let draft:String=page.evaluate("document.querySelector('textarea').value").await.expect("draft").into_value().expect("text");
+        assert_eq!(draft,"UNSENT_A_DRAFT");
+        page.evaluate("document.querySelector('textarea').value=''").await.expect("user clears fixture draft");
+        let resumed=work.submit_prompt_with_attachment("draft-routing",&destination,"REPORT_B",None,"cross-draft").await.expect("resumed submission");
+        assert!(matches!(resumed,prompt_submission::PromptSubmissionOutcome::Verified(_)),"delivery did not recover when the draft was cleared");
+        let count:u64=page.evaluate("window.sent||0").await.expect("send count").into_value().expect("count");
+        assert_eq!(count,1);
+        let again=work.submit_prompt_with_attachment("draft-routing",&destination,"REPORT_B",None,"cross-draft").await.expect("repeat observation");
+        assert!(matches!(again,prompt_submission::PromptSubmissionOutcome::Verified(_)));
+        let count:u64=page.evaluate("window.sent||0").await.expect("send count").into_value().expect("count");
+        assert_eq!(count,1,"echo reconciliation submitted the same report again");
+        eprintln!("REAL_CHROME: A draft blocks B navigation; clear -> one B submission -> duplicate observation does not resend");
+    }).await;
+    let _ = manager.close("draft-routing").await;
+    source_server.abort();
+    destination_server.abort();
+    outcome.expect("cross-chat assertions");
+}

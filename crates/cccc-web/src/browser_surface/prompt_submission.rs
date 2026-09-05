@@ -127,6 +127,16 @@ impl BrowserSurfaces {
         let current_url = page.url().await?.unwrap_or_default();
         if !target_url.is_empty() && !same_page(&current_url, target_url) {
             let current = inspect_submission(&page, prompt, &submission_needles(prompt)).await?;
+            if current.composer_chars > 0 {
+                return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                    false,
+                    "none:composer_occupied",
+                    "not_sent_composer_occupied",
+                    "",
+                    &current,
+                    &current,
+                )));
+            }
             if current.running || current.stop_visible {
                 return Ok(PromptSubmissionOutcome::Deferred(evidence(
                     false,
@@ -146,6 +156,17 @@ impl BrowserSurfaces {
             if !same_page(&current, target_url) {
                 goto_dom_content_loaded(&page, target_url).await?;
             }
+        }
+        if sign_in_required(&page).await? {
+            let observed = inspect_submission(&page, prompt, &submission_needles(prompt)).await?;
+            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:login_required",
+                "not_sent_login_required",
+                "",
+                &observed,
+                &observed,
+            )));
         }
         dismiss_duplicate_upload_dialog(&page).await?;
 
@@ -598,17 +619,20 @@ impl BrowserSurfaces {
             .context("inspect visible browser composer")?
             .into_value::<ComposerCandidate>()
             .context("decode visible browser composer")?;
-        let ready = !candidate.selector.is_empty();
+        let login_required = sign_in_required(&page).await?;
+        let ready = !candidate.selector.is_empty() && !login_required;
         let readiness = json!({
             "ready":ready,
-            "login_required":!ready,
+            "login_required":login_required,
             "tab_url":url,
             "input_selector":candidate.descriptor,
             "checked_at":cccc_contracts::utc_now(),
-            "message":if ready {
-                "Browser model composer is ready."
+            "message":if login_required {
+                "Sign in to ChatGPT in this browser before expecting tool access or saved-conversation delivery."
+            } else if ready {
+                "Browser model composer is ready; account tool access still requires a real call."
             } else {
-                "Browser model sign-in or composer setup is required."
+                "Browser model composer is not ready yet."
             }
         });
         self.record_prompt_readiness(key, &page, &readiness).await;
@@ -1080,6 +1104,30 @@ fn with_attachment_evidence(
     }
 }
 
+// Check explicit UI authentication controls, not cookies or text inside a report.
+// ponytail: this is a DOM preflight, not proof that the account can call an MCP tool.
+// Real tool execution remains the acceptance check when ChatGPT changes its UI.
+async fn sign_in_required(page: &Page) -> Result<bool> {
+    page.evaluate(SIGN_IN_REQUIRED_SCRIPT)
+        .await?
+        .into_value()
+        .context("decode browser sign-in state")
+}
+
+const SIGN_IN_REQUIRED_SCRIPT: &str = r#"(() => {
+    const candidates = document.querySelectorAll(
+        '[data-mobile-auth-entry-action="login"], [data-testid="login-button"], [data-testid="signup-button"], a[href="/auth/login"], a[href^="/auth/login?"], header button, nav button, [role="navigation"] button'
+    );
+    return Array.from(candidates).some(node => {
+        if (node.closest('[data-message-author-role], [data-testid^="conversation-turn"], [inert], [aria-hidden="true"]')) return false;
+        const rect=node.getBoundingClientRect(); const style=getComputedStyle(node);
+        if (!rect.width || !rect.height || style.display==='none' || style.visibility==='hidden' || Number.parseFloat(style.opacity||'1')<=0.01) return false;
+        const explicit=node.matches('[data-mobile-auth-entry-action="login"], [data-testid="login-button"], [data-testid="signup-button"], a[href="/auth/login"], a[href^="/auth/login?"]');
+        const label=(node.getAttribute('aria-label')||node.innerText||'').trim();
+        return explicit || /^(log in|sign in|sign up|登录|登入|注册|免費註冊|免费注册|ログイン)$/i.test(label);
+    });
+})()"#;
+
 const SELECT_COMPOSER_SCRIPT: &str = r#"() => {
     const markerName = 'data-cccc-web-model-composer';
     const markerValue = 'cccc-web-model-composer';
@@ -1321,7 +1369,9 @@ const INSPECT_SUBMISSION_SCRIPT: &str = r#"payload => {
     return {
         url: location.href || '', echo_found: echoFound, running: stopVisible, stop_visible: stopVisible,
         composer_exact: Boolean(markedText && markedText === expected),
-        composer_contains_prompt: composerTexts.some(containsPrompt), composer_chars: markedText.length,
+        composer_contains_prompt: composerTexts.some(containsPrompt),
+        // Before selecting an input, existing visible drafts still prevent a target switch.
+        composer_chars: marked ? markedText.length : Math.max(0, ...composerTexts.map(text => text.length)),
         user_message_count: document.querySelectorAll('[data-message-author-role="user"]').length,
         send_enabled_count: safeSend.filter(node => !node.disabled
             && String(node.getAttribute('aria-disabled') || '').toLowerCase() !== 'true').length
