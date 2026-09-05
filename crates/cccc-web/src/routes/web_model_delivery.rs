@@ -152,7 +152,7 @@ fn spawn_worker(state: AppState, group_id: String, actor_id: String) {
                 target["last_delivery_id"].as_str(),
                 target["last_delivery_event_ids"].as_array(),
             ) {
-                record_delivery(
+                let _ = record_delivery(
                     &state,
                     &group_id,
                     &actor_id,
@@ -453,7 +453,7 @@ async fn deliver_once(
         "",
         json!({"target_url":target_url,"auto_bind_new_chat":target["kind"] == "new_chat"}),
     )
-    .await;
+    .await?;
     let submitted = state
         .browser_surfaces
         .submit_prompt_with_attachment(
@@ -478,6 +478,18 @@ async fn deliver_once(
                 actor_id,
                 json!({"last_delivery_status":"deferred","last_submission_evidence":browser,"last_error":message}),
             )?;
+            record_delivery(
+                state,
+                group_id,
+                actor_id,
+                turn_id,
+                turn["event_ids"].clone(),
+                &delivery_id,
+                "failed",
+                message,
+                json!({"target_url":target_url}),
+            )
+            .await?;
             record_connector(state, group_id, actor_id, "deferred", turn_id, message)?;
             // A running Chat or an unsent human draft is not a failed connection.
             // Reuse the existing idle cadence rather than exhausting technical retries.
@@ -531,7 +543,7 @@ async fn deliver_once(
                 &message,
                 json!({"target_url":target_url}),
             )
-            .await;
+            .await?;
             return Ok(DeliveryOutcome::Stopped);
         }
         Err(error) => {
@@ -591,7 +603,7 @@ async fn deliver_once(
             "auto_bind_new_chat":target["kind"] == "new_chat"
         }),
     )
-    .await;
+    .await?;
     let complete = complete_args(
         group_id,
         actor_id,
@@ -693,7 +705,7 @@ async fn deliver_once(
                 "auto_bind_new_chat":true
             }),
         )
-        .await;
+        .await?;
     }
     if pending_new_chat_bind {
         record_delivery(
@@ -711,7 +723,7 @@ async fn deliver_once(
                 "auto_bind_new_chat":true
             }),
         )
-        .await;
+        .await?;
     }
     Ok(DeliveryOutcome::Submitted)
 }
@@ -756,7 +768,7 @@ async fn complete_ambiguous_attempt(
         message,
         json!({}),
     )
-    .await;
+    .await?;
     let completion = daemon_call(state, "runtime_complete_turn", complete).await;
     let completion_status = if completion.is_ok() {
         "submission_ambiguous"
@@ -1277,7 +1289,7 @@ async fn resolve_pending_new_chat(
                 "resolved_pending_new_chat":true
             }),
         )
-        .await;
+        .await?;
     }
     Ok(DeliveryOutcome::Submitted)
 }
@@ -1310,4 +1322,190 @@ fn required<'a>(value: &'a Value, key: &str) -> Result<&'a str, ApiError> {
         .as_str()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| ApiError::bad(format!("runtime turn missing {key}")))
+}
+
+#[cfg(test)]
+mod retry_integration_tests {
+    use super::*;
+    use cccc_core::{GroupStore, HomeLayout, ledger, web_model_connectors};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::time::{Duration, timeout};
+
+    #[tokio::test]
+    async fn real_browser_deferral_resumes_the_same_report_once() {
+        if crate::system_browser_path().is_none() {
+            return;
+        }
+        let temp = tempfile::tempdir().expect("isolated test home");
+        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+        home.initialize().expect("initialize");
+        let (shutdown, _) = tokio::sync::broadcast::channel(1);
+        let (_, _, browser, state) = crate::app_with_shutdown(
+            home.clone(),
+            shutdown.clone(),
+            crate::WebMode::Normal,
+            None,
+            crate::LiveBinding {
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
+            "test-browser-retry".into(),
+        );
+        let daemon_home = home.clone();
+        let daemon = tokio::spawn(async move { cccc_daemon::run(daemon_home).await });
+        for _ in 0..100 {
+            if daemon_call(&state, "ping", Default::default())
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let count = Arc::new(AtomicUsize::new(0));
+        let received = Arc::clone(&count);
+        let page = r#"<!doctype html><html><body>
+<button style="position:fixed;left:10px;top:10px;width:130px;height:36px" type="button" onclick="document.querySelector('#busy').remove();document.querySelector('textarea').value='';this.remove()">Finish current answer</button>
+<button id="busy" type="button" aria-label="Stop streaming" style="position:fixed;left:180px;top:10px">Stop</button>
+<textarea id="prompt-textarea" placeholder="Message" style="position:fixed;left:10px;top:70px;width:650px;height:120px">unsent human draft</textarea>
+<button data-testid="send-button" type="button" aria-label="Send prompt" style="position:fixed;left:10px;top:230px;width:100px;height:35px" onclick="const t=document.querySelector('textarea');if(!t.value)return;const d=document.createElement('div');d.dataset.messageAuthorRole='user';d.textContent=t.value;d.style='margin-top:290px';document.body.append(d);t.value='';fetch('/received',{method:'POST'})">Send</button>
+</body></html>"#;
+        let app = axum::Router::new()
+            .route(
+                "/",
+                axum::routing::get(move || async move { axum::response::Html(page) }),
+            )
+            .route(
+                "/received",
+                axum::routing::post(move || {
+                    let received = Arc::clone(&received);
+                    async move {
+                        received.fetch_add(1, Ordering::SeqCst);
+                        "ok"
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fixture listener");
+        let url = format!("http://{}/", listener.local_addr().expect("address"));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let work_state = state.clone();
+        let work_home = home.clone();
+        let work_browser = Arc::clone(&browser);
+        let profile = temp.path().join("browser");
+        let operation = async move {
+            let state = work_state;
+            let home = work_home;
+            let browser = work_browser;
+            let call = |op: &'static str, values: Value| {
+                daemon_call(
+                    &state,
+                    op,
+                    values.as_object().cloned().expect("test arguments"),
+                )
+            };
+            let created = call("group_create", json!({"title":"real browser retry"}))
+                .await
+                .expect("create group");
+            let gid = created["group"]["group_id"].as_str().expect("group id");
+            call("actor_add",json!({"group_id":gid,"actor_id":"web","runtime":"web_model","by":"user","env":{"CCCC_WEB_MODEL_DELIVERY_MODE":"browser"}})).await.expect("actor");
+            call(
+                "actor_start",
+                json!({"group_id":gid,"actor_id":"web","by":"user"}),
+            )
+            .await
+            .expect("start");
+            web_model_connectors::save_browser_target(
+                &home,
+                gid,
+                "web",
+                Some(json!({"kind":"existing_chat","url":url})),
+            )
+            .expect("local fixture target");
+            let source=call("send",json!({"group_id":gid,"by":"user","to":["web"],"text":"BROWSER_RETRY_REPORT","message_mode":"mail"})).await.expect("Mail");
+            let source_id = source["event"]["id"].as_str().expect("source id");
+            call(
+                "message_deliver",
+                json!({"group_id":gid,"by":"user","source_event_id":source_id,"actor_ids":["web"]}),
+            )
+            .await
+            .expect("promote");
+            browser
+                .ensure_open(surface_key(), &profile, &url, 800, 600)
+                .await
+                .expect("real Chrome");
+            let busy = deliver_pending(&state, gid, "web")
+                .await
+                .expect("busy attempt");
+            assert!(matches!(busy, DeliveryOutcome::Idle));
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                0,
+                "sent during the current answer"
+            );
+            browser
+                .command(surface_key(), &json!({"t":"click","x":75,"y":28}))
+                .await
+                .expect("finish fixture answer");
+            let delivered = deliver_pending(&state, gid, "web")
+                .await
+                .expect("resumed attempt");
+            assert!(
+                matches!(delivered, DeliveryOutcome::Submitted),
+                "busy turn did not resume: target={} surface={} count={}",
+                load_target(&state, gid, "web").expect("debug target"),
+                browser.info(surface_key()).await,
+                count.load(Ordering::SeqCst)
+            );
+            assert!(matches!(
+                deliver_pending(&state, gid, "web")
+                    .await
+                    .expect("third attempt"),
+                DeliveryOutcome::Idle
+            ));
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                1,
+                "duplicate browser submission"
+            );
+            let store = GroupStore::new(home.clone()).expect("store");
+            let events =
+                ledger::read_all(&store.ledger_path(gid).expect("ledger")).expect("events");
+            assert_eq!(
+                events.iter().filter(|e| e.kind == "chat.message").count(),
+                1
+            );
+            let transitions = events
+                .iter()
+                .filter(|e| e.kind == "runtime.delivery" && e.data["source_event_id"] == source_id)
+                .filter_map(|e| e.data["state"].as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                transitions,
+                vec!["claimed", "failed", "claimed", "accepted"]
+            );
+            let mail = call(
+                "inbox_peek",
+                json!({"group_id":gid,"actor_id":"web","by":"web"}),
+            )
+            .await
+            .expect("mail unchanged");
+            assert_eq!(mail["messages"].as_array().expect("messages").len(), 1);
+            eprintln!(
+                "REAL_CHROME_AND_DAEMON: busy -> failed/retryable -> idle -> one verified submission; Mail remains unread"
+            );
+        };
+        // Cleanup runs even if a test assertion panics in the task.
+        let outcome = tokio::spawn(timeout(Duration::from_secs(40), operation)).await;
+        let _ = browser.close(surface_key()).await;
+        let _ = shutdown.send(());
+        let _ = daemon_call(&state, "shutdown", Default::default()).await;
+        let _ = timeout(Duration::from_secs(5), daemon).await;
+        server.abort();
+        outcome
+            .expect("browser flow assertions")
+            .expect("bounded browser flow");
+    }
 }

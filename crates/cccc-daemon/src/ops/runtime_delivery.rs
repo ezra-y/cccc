@@ -330,7 +330,8 @@ pub fn pending_sources(
                 .get("message_mode")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            (matches!(mode, "send" | "request_reply") || (mode == "mail" && state == "claimed"))
+            (matches!(mode, "send" | "request_reply")
+                || (mode == "mail" && matches!(state, "claimed" | "failed")))
                 && inbox::is_for_actor(group, event, &actor.id)
         } else if event.kind == "system.notify" {
             if legacy_read_watermark.covers_notification(event) {

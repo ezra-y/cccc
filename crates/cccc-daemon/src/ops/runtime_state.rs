@@ -639,6 +639,17 @@ fn record_browser_delivery(home: &HomeLayout, request: &DaemonRequest) -> OpResu
             )?;
         }
     }
+    if browser_delivery["state"] == "failed" {
+        // No message crossed the browser boundary. Release only this exact
+        // reservation; completion remains reserved for accepted/ambiguous work.
+        let active = actor_state(home, &group.group_id, &actor_id)?;
+        if active["status"] == "working"
+            && active["active_turn_id"] == turn_id
+            && active["active_event_ids"] == json!(event_ids)
+        {
+            set_runtime_status(home, &group, &actor_id, "waiting", "", "", &[])?;
+        }
+    }
     object(json!({"event":event}))
 }
 

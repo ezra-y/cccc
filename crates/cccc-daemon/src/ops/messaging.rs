@@ -845,11 +845,50 @@ fn message_deliver(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
             return Err(settlement_error.unwrap_or(error));
         }
     };
-    actor_delivery::dispatch_preclaimed(home, &group, &source, &requested);
+    // A promoted Mail message is durable, but cannot reserve a browser forever
+    // before its return target exists. Existing failed-delivery retry owns it.
+    let mut runnable = Vec::with_capacity(requested.len());
+    let mut delivery_states = Map::new();
+    for actor in requested {
+        let transport = actor_delivery::delivery_transport(home, &group, &actor);
+        if transport == "web_model_browser" {
+            let unavailable = match cccc_core::web_model_connectors::browser_target(
+                home,
+                &group.group_id,
+                &actor.id,
+            ) {
+                Ok(target)
+                    if target["kind"] != "new_chat"
+                        && target["url"].as_str().is_none_or(str::is_empty) =>
+                {
+                    Some("browser return target is not configured".to_owned())
+                }
+                Ok(_) => None,
+                Err(error) => Some(format!("browser return target could not be read: {error}")),
+            };
+            if let Some(reason) = unavailable {
+                crate::ops::runtime_delivery::append_state(
+                    home,
+                    &group.group_id,
+                    &actor.id,
+                    &actor.created_at,
+                    &source_event_id,
+                    transport,
+                    crate::ops::runtime_delivery::DeliveryOutcome::Failed(&reason),
+                )?;
+                delivery_states.insert(actor.id.clone(), json!("failed"));
+                continue;
+            }
+        }
+        delivery_states.insert(actor.id.clone(), json!("claimed"));
+        runnable.push(actor);
+    }
+    actor_delivery::dispatch_preclaimed(home, &group, &source, &runnable);
     object(json!({
         "event": source,
         "actor_ids": actor_ids,
-        "delivery_state": "claimed",
+        "delivery_state":if runnable.is_empty(){"failed"}else{"claimed"},
+        "delivery_states":delivery_states,
     }))
 }
 

@@ -1287,7 +1287,7 @@ const INSPECT_SUBMISSION_SCRIPT: &str = r#"payload => {
         ((node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) && !node.disabled && !node.readOnly)
         || node.isContentEditable || node.getAttribute('contenteditable') === 'true'
     );
-    const read = node => normalize(('value' in node && node.value) ? node.value : (node.innerText || node.textContent || ''));
+    const read = node => normalize('value' in node ? node.value : (node.innerText || node.textContent || ''));
     const marked = document.querySelector('[data-cccc-web-model-composer="cccc-web-model-composer"]');
     const markedText = marked ? read(marked) : '';
     const composers = Array.from(new Set([
