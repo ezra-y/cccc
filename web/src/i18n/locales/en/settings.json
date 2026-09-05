@@ -1223,6 +1223,16 @@
         "mcpAppTitle": "2. Connect CCCC MCP app",
         "deliveryTargetTitle": "3. Choose delivery target"
       },
+      "binding": {
+        "title": "Chat connection",
+        "statusBound": "Bound",
+        "statusUnbound": "Not bound",
+        "boundDetail": "This group is bound to a ChatGPT conversation. Browser return messages still require a saved target and a signed-in browser.",
+        "unboundDetail": "This group has no bound ChatGPT conversation. Paste the connection instructions into the conversation you want to use as Foreman.",
+        "hint": "Conversation identity and the browser return target are separate. This status confirms identity only.",
+        "template": "Bind this conversation to Foreman {{actor}} in group “{{group}}”. Call in order:\ncccc_session_bind(code={{code}})\ncccc_bootstrap()\nReport the actual group and browser return-target status. The code expires in ten minutes and can be used once.",
+        "legacySetup": "Original connector setup and permission notes"
+      },
       "next": {
         "prefix": "Next: {{action}}",
         "setPublicHttps": "Set the public HTTPS URL in Web Access.",
@@ -1294,7 +1304,8 @@
         "useCurrentTab": "Use current tab",
         "reloadChatGpt": "Reload ChatGPT page",
         "checkStatus": "Check status",
-        "closeBrowser": "Close browser"
+        "closeBrowser": "Close browser",
+        "copyBindingInstructions": "Copy connection instructions"
       },
       "activity": {
         "notSeenYet": "not seen yet",
@@ -1313,6 +1324,7 @@
         "browserClosed": "ChatGPT browser session closed.",
         "newChatSelected": "New ChatGPT chat selected for next delivery.",
         "conversationBound": "ChatGPT conversation bound to this actor.",
+        "bindingCopied": "Connection instructions copied.",
         "targetSavedExisting": "Saved. Next delivery uses this ChatGPT chat.",
         "targetSavedNewChat": "Saved. Next delivery starts a new ChatGPT chat.",
         "copied": "{{label}} copied.",
@@ -1330,7 +1342,8 @@
         "revokeConnectorFailed": "Failed to revoke connector.",
         "restartBrowserFailed": "Failed to restart ChatGPT browser.",
         "closeBrowserFailed": "Failed to close ChatGPT browser session.",
-        "bindConversationFailed": "Failed to bind ChatGPT conversation."
+        "bindConversationFailed": "Failed to bind ChatGPT conversation.",
+        "bindingRequestFailed": "Failed to issue the one-time connection code."
       },
       "nextAction": {
         "open_chatgpt": "Open ChatGPT",

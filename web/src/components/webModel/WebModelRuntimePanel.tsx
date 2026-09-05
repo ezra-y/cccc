@@ -320,12 +320,14 @@ export function WebModelRuntimePanel({
   isVisible,
   readOnly,
 }: WebModelRuntimePanelProps) {
-  const { t } = useTranslation("chat");
+  const { t } = useTranslation(["chat", "settings"]);
+  const wm = (key: string) => t(`settings:webModels.chatgpt.${key}`);
   const openSettingsTarget = useModalStore((state) => state.openSettingsTarget);
   const [session, setSession] = useState<WebModelBrowserSession | null>(null);
   const [error, setError] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const [surfaceRestartNonce, setSurfaceRestartNonce] = useState(0);
+  const [surfaceRequested, setSurfaceRequested] = useState(false);
   const currentSelectionRef = useRef({ groupId, actorId: String(actor.id || "").trim() });
   const actorId = String(actor.id || "").trim();
   currentSelectionRef.current = { groupId, actorId };
@@ -333,6 +335,7 @@ export function WebModelRuntimePanel({
   const canControlSurface = Boolean(isVisible && isRunning && !readOnly && groupId && actorId);
 
   useEffect(() => {
+    setSurfaceRequested(false);
     if (!isVisible || !groupId || !actorId) {
       setSession(null);
       setError("");
@@ -392,6 +395,7 @@ export function WebModelRuntimePanel({
         return;
       }
       setSession(resp.result.browser_session || {});
+      setSurfaceRequested(true);
       setSurfaceRestartNonce((value) => value + 1);
     } finally {
       if (matchesWebModelActorSelection(currentSelectionRef.current, groupId, actorId))
@@ -517,7 +521,11 @@ export function WebModelRuntimePanel({
                 tonePillClass(chatGptBlock.tone),
               )}
             >
-              ChatGPT {chatGptBlock.value}
+              {session?.ready
+                ? wm("browser.ready")
+                : session?.active
+                  ? wm("browser.signInNeeded")
+                  : wm("browser.notOpen")}
             </span>
             <span
               className={classNames(
@@ -526,7 +534,11 @@ export function WebModelRuntimePanel({
               )}
               title={targetBlock.detail}
             >
-              Target {targetBlock.value}
+              {session?.conversation_url
+                ? wm("target.savedExisting")
+                : session?.pending_new_chat_bind
+                  ? wm("target.savedNewChat")
+                  : wm("target.savedNone")}
             </span>
             {showActivity ? (
               <span
@@ -544,7 +556,11 @@ export function WebModelRuntimePanel({
                 className="min-w-0 max-w-[min(54vw,520px)] truncate text-xs text-[var(--color-text-tertiary)]"
                 title={nextAction?.reason ? `${nextSummary}: ${nextAction.reason}` : nextSummary}
               >
-                Next: {nextSummary}
+                {t("settings:webModels.chatgpt.next.prefix", {
+                  action: t(`settings:webModels.chatgpt.nextAction.${recommendedAction}`, {
+                    defaultValue: wm("next.bindTarget"),
+                  }),
+                })}
               </span>
             ) : null}
           </div>
@@ -683,8 +699,8 @@ export function WebModelRuntimePanel({
               onClick={reloadChatGptPage}
               disabled={Boolean(busyAction) || !isRunning}
               className={iconButtonClass(false)}
-              title="Restart ChatGPT browser"
-              aria-label="Restart ChatGPT browser"
+              title={wm("buttons.reloadChatGpt")}
+              aria-label={wm("buttons.reloadChatGpt")}
             >
               <RefreshIcon size={17} aria-hidden="true" />
             </button>
@@ -692,8 +708,8 @@ export function WebModelRuntimePanel({
               type="button"
               onClick={openSettings}
               className={iconButtonClass(primaryActionNeeded)}
-              title="Open ChatGPT Web Model settings"
-              aria-label="Open ChatGPT Web Model settings"
+              title={wm("title")}
+              aria-label={wm("title")}
             >
               <SettingsIcon size={17} aria-hidden="true" />
             </button>
@@ -701,7 +717,7 @@ export function WebModelRuntimePanel({
         </div>
       </div>
 
-      {canControlSurface ? (
+      {canControlSurface && (surfaceRequested || session?.active) ? (
         <div className="min-h-0 flex-1 overflow-hidden">
           <ProjectedBrowserSurfacePanel
             key={`chatgpt-runtime-surface:${groupId}:${actorId}:${surfaceRestartNonce}`}
@@ -715,16 +731,27 @@ export function WebModelRuntimePanel({
             webSocketUrl={api.getWebModelBrowserSurfaceWebSocketUrl(groupId, actorId)}
             fallbackUrl="https://chatgpt.com/"
             labels={{
-              starting: "Opening ChatGPT...",
-              waiting: "Waiting for ChatGPT...",
-              ready: "ChatGPT surface ready",
-              failed: "ChatGPT surface failed",
-              closed: "ChatGPT surface closed.",
-              reconnecting: "Reconnecting ChatGPT surface...",
-              reconnect: "Reconnect",
-              frameAlt: "ChatGPT browser frame",
+              starting: wm("browserSurface.starting"),
+              waiting: wm("browserSurface.waiting"),
+              ready: wm("browserSurface.ready"),
+              failed: wm("browserSurface.failed"),
+              closed: wm("browserSurface.closed"),
+              reconnecting: wm("browserSurface.reconnecting"),
+              reconnect: wm("browserSurface.reconnect"),
+              frameAlt: wm("browserSurface.frameAlt"),
             }}
           />
+        </div>
+      ) : canControlSurface ? (
+        <div className="flex min-h-[160px] flex-1 flex-col items-center justify-center gap-3 text-sm text-[var(--color-text-secondary)]">
+          <p>{wm("binding.boundDetail")}</p>
+          <button
+            type="button"
+            onClick={() => setSurfaceRequested(true)}
+            className="rounded-lg border border-[var(--glass-border-subtle)] px-4 py-2 hover:bg-[var(--glass-tab-bg-hover)]"
+          >
+            {wm("buttons.openChatGpt")}
+          </button>
         </div>
       ) : surfaceDisabledMessage ? (
         <div className="flex min-h-[240px] flex-1 items-center justify-center rounded-[18px] border border-dashed border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] px-3 py-3 text-center text-xs leading-5 text-[var(--color-text-tertiary)]">

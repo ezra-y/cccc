@@ -453,3 +453,9 @@ cccc mcp                           # Start MCP server (stdio mode)
 | `CCCC_WEB_READONLY` | unset | Truthy value also enables read-only exhibit mode |
 | `CCCC_WEB_READY_TIMEOUT_SECONDS` | `10` | Supervised Web child readiness timeout before CCCC treats startup as failed |
 | `CCCC_LOG_LEVEL` | `INFO` | Log level |
+
+### Conversation-bound Web Model MCP
+
+`cccc mcp --gateway` opts into trusted ChatGPT transport conversation routing.
+Use the same `CCCC_HOME` as the Web UI and daemon. Normal `cccc mcp` is unchanged.
+See [ChatGPT Web Model Runtime](../guide/web-model-runtime.md#one-tunnel-multiple-chatgpt-conversations) for binding and return-delivery setup.

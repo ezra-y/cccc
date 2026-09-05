@@ -1,4 +1,7 @@
 {
+  "changeForeman": "更换组长",
+  "webForeman": "网页模型",
+  "localForeman": "本地模型",
   "agentNotFound": "未找到智能体",
   "loadingAgent": "加载智能体中…",
   "foreman": "领班",

@@ -10,11 +10,18 @@ import {
   HeadlessStreamEvent,
   StreamingActivity,
   RUNTIME_INFO,
+  SUPPORTED_RUNTIMES,
+  type SupportedRuntime,
 } from "../types";
 import { useActorDisplayState } from "../hooks/useActorDisplayState";
 import { classNames } from "../utils/classNames";
 import { formatFullTime, formatTime } from "../utils/time";
-import { useGroupStore, useObservabilityStore, useTerminalSignalsStore } from "../stores";
+import {
+  useGroupStore,
+  useObservabilityStore,
+  useTerminalSignalsStore,
+  useFormStore,
+} from "../stores";
 import { HeadlessRuntimePanel } from "./headless/HeadlessRuntimePanel";
 import { WebModelRuntimePanel } from "./webModel/WebModelRuntimePanel";
 import {
@@ -44,6 +51,7 @@ import {
   shouldReconcileStoppedActorStatus,
 } from "./AgentTab.model";
 import { ActorAvatar } from "./ActorAvatar";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
 const EMPTY_STREAMING_ACTIVITIES: StreamingActivity[] = [];
 const EMPTY_HEADLESS_PREVIEW_SESSIONS: HeadlessPreviewSession[] = [];
@@ -127,6 +135,8 @@ export function AgentTab({
   onStatusChange,
 }: AgentTabProps) {
   const { t } = useTranslation("actors");
+  const [foremanMenuOpen, setForemanMenuOpen] = useState(false);
+  const openingForemanEditor = useRef(false);
   // Derived state (must be defined before refs that use them)
   const { isRunning, workingState } = useActorDisplayState({
     groupId,
@@ -623,6 +633,67 @@ export function AgentTab({
   const stateNext = String(agentState?.hot?.next_action || "").trim();
   const actorGroupRole = normalizeActorGroupRole(actor.role);
 
+  const chooseForemanRuntime = (category: "web" | "local") => {
+    const current = actor.runtime as SupportedRuntime;
+    const runtime: SupportedRuntime =
+      category === "web"
+        ? "web_model"
+        : current !== "web_model" && SUPPORTED_RUNTIMES.includes(current)
+          ? current
+          : "opencode";
+    openingForemanEditor.current = true;
+    setForemanMenuOpen(false);
+    onEdit();
+    const form = useFormStore.getState();
+    form.setEditActorRuntime(runtime);
+    if (runtime !== current) form.setEditActorCommand("");
+  };
+  const configurationAction =
+    actorGroupRole === "foreman" ? (
+      <Popover open={foremanMenuOpen} onOpenChange={setForemanMenuOpen}>
+        <PopoverTrigger asChild>
+          <button
+            disabled={isBusy}
+            className={`${ghostActionButtonClass} flex-shrink-0 whitespace-nowrap`}
+            aria-label={t("changeForeman")}
+          >
+            <EditIcon size={16} /> {t("changeForeman")} <span aria-hidden="true">⌄</span>
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="start"
+          side="top"
+          className="flex min-w-40 flex-col p-1"
+          onCloseAutoFocus={(event) => {
+            if (openingForemanEditor.current) event.preventDefault();
+            openingForemanEditor.current = false;
+          }}
+        >
+          <button
+            className="rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--glass-tab-bg-hover)]"
+            onClick={() => chooseForemanRuntime("web")}
+          >
+            {t("webForeman")}
+          </button>
+          <button
+            className="rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--glass-tab-bg-hover)]"
+            onClick={() => chooseForemanRuntime("local")}
+          >
+            {t("localForeman")}
+          </button>
+        </PopoverContent>
+      </Popover>
+    ) : (
+      <button
+        onClick={onEdit}
+        disabled={isBusy}
+        className={`${ghostActionButtonClass} flex-shrink-0 whitespace-nowrap`}
+        aria-label={t("editAgentConfig")}
+      >
+        <EditIcon size={16} /> {t("common:edit")}
+      </button>
+    );
+
   return (
     <div className="flex flex-col h-full">
       {/* Agent Header */}
@@ -985,15 +1056,7 @@ export function AgentTab({
                   {!isSmallScreen && t("newSession")}
                 </button>
               ) : null}
-              <button
-                onClick={onEdit}
-                disabled={isBusy}
-                className={`${ghostActionButtonClass} flex-shrink-0 whitespace-nowrap`}
-                aria-label={t("editAgentConfig")}
-              >
-                <EditIcon size={16} />
-                {!isSmallScreen && t("common:edit")}
-              </button>
+              {configurationAction}
             </>
           ) : (
             <>
@@ -1017,14 +1080,7 @@ export function AgentTab({
                   {t("newSession")}
                 </button>
               ) : null}
-              <button
-                onClick={onEdit}
-                disabled={isBusy}
-                className={ghostActionButtonClass}
-                aria-label={t("editAgentConfig")}
-              >
-                <EditIcon size={16} /> {t("common:edit")}
-              </button>
+              {configurationAction}
             </>
           )}
           <button

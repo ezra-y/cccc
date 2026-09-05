@@ -1,4 +1,7 @@
 {
+  "changeForeman": "Change Foreman",
+  "webForeman": "Web model",
+  "localForeman": "Local model",
   "agentNotFound": "Agent not found",
   "loadingAgent": "Loading agent…",
   "foreman": "foreman",

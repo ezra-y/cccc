@@ -1218,6 +1218,16 @@
         "mcpAppTitle": "2. 连接 CCCC MCP app",
         "deliveryTargetTitle": "3. 选择投递目标"
       },
+      "binding": {
+        "title": "会话连接",
+        "statusBound": "已绑定",
+        "statusUnbound": "未绑定",
+        "boundDetail": "此工作组已绑定一个 ChatGPT 聊天。回传消息还需要保存目标聊天，并确认浏览器已登录。",
+        "unboundDetail": "此工作组还没有绑定 ChatGPT 聊天。复制下面的连接说明，发送到你要用作组长的聊天中。",
+        "hint": "绑定聊天身份与保存回传地址是两个步骤；这里只确认聊天身份。",
+        "template": "请将当前聊天绑定到工作组「{{group}}」的组长 {{actor}}，按顺序调用：\ncccc_session_bind(code={{code}})\ncccc_bootstrap()\n绑定后请报告真实工作组和回传地址状态。绑定码十分钟内有效，只能使用一次。",
+        "legacySetup": "原版连接方式与权限说明"
+      },
       "next": {
         "prefix": "下一步：{{action}}",
         "setPublicHttps": "在 Web Access 中设置公网 HTTPS URL。",
@@ -1289,7 +1299,8 @@
         "useCurrentTab": "使用当前 tab",
         "reloadChatGpt": "重新加载 ChatGPT 页面",
         "checkStatus": "检查状态",
-        "closeBrowser": "关闭浏览器"
+        "closeBrowser": "关闭浏览器",
+        "copyBindingInstructions": "复制连接说明"
       },
       "activity": {
         "notSeenYet": "尚未访问",
@@ -1308,6 +1319,7 @@
         "browserClosed": "ChatGPT 浏览器会话已关闭。",
         "newChatSelected": "下一次投递将新建 ChatGPT 会话。",
         "conversationBound": "ChatGPT 会话已绑定到这个 actor。",
+        "bindingCopied": "连接说明已复制。",
         "targetSavedExisting": "已保存。下一次投递会使用这个 ChatGPT 会话。",
         "targetSavedNewChat": "已保存。下一次投递会新建 ChatGPT 会话。",
         "copied": "{{label}} 已复制。",
@@ -1325,7 +1337,8 @@
         "revokeConnectorFailed": "撤销 connector 失败。",
         "restartBrowserFailed": "重启 ChatGPT 浏览器失败。",
         "closeBrowserFailed": "关闭 ChatGPT 浏览器会话失败。",
-        "bindConversationFailed": "绑定 ChatGPT 会话失败。"
+        "bindConversationFailed": "绑定 ChatGPT 会话失败。",
+        "bindingRequestFailed": "获取一次性绑定码失败。"
       },
       "nextAction": {
         "open_chatgpt": "打开 ChatGPT",

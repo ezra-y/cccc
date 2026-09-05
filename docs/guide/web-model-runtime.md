@@ -6,7 +6,7 @@ MCP availability is determined by the selected ChatGPT model and account, not by
 
 There are two delivery transports behind the same actor identity:
 
-1. **Browser delivery**: CCCC claims a pending Send or Send + Reply batch and injects it into a bound ChatGPT web chat through the shared daemon-owned projected browser session. If ChatGPT is already responding, CCCC may use the formal `Send prompt` control inside that composer, but it never treats the visible Stop control or a similarly named control elsewhere on the page as a send target. A confirmed injection records `runtime.delivery=accepted`; an indeterminate post-click result records `ambiguous`, and neither is automatically submitted again. A definite pre-submit failure records `failed` and remains eligible for a later delivery attempt.
+1. **Browser delivery**: CCCC claims a pending Send or Send + Reply batch and injects it into a bound ChatGPT web chat through the shared daemon-owned projected browser session. If ChatGPT is already responding or its composer contains an unrelated draft, CCCC waits without replacing the draft or pressing Send/Stop. This normal busy state does not consume the connection-error retry budget. A confirmed injection records `runtime.delivery=accepted`; an indeterminate post-click result records `ambiguous`, and neither is automatically submitted again. A definite pre-submit failure records `failed` and remains eligible for a later delivery attempt.
 2. **Remote-MCP pull**: ChatGPT calls `cccc_runtime_wait_next_turn` through MCP. Returning a turn records that the pull transport accepted it; `cccc_runtime_complete_turn` closes that exact active runtime turn after processing.
 
 In both modes, transport delivery, Inbox reading, and runtime completion are separate
@@ -19,7 +19,7 @@ instead of overwriting newer runtime state.
 
 Mental model: the ChatGPT Web Model actor is a normal CCCC agent whose model surface happens to be ChatGPT Web. It reuses the same `cccc_bootstrap`, `cccc_help`, messaging, coordination, capability, memory, and repository tool paths as Codex/Claude actors. Browser delivery and remote-MCP pull are transport adapters, not a separate help system.
 
-Connector model: CCCC currently supports one ChatGPT Web Model actor per CCCC instance. That actor owns one active remote MCP URL and one target ChatGPT conversation. Rotating the MCP URL creates a new secret and revokes the previous active URL.
+Connector model: each CCCC group can have one ChatGPT Web Model actor. Each actor owns its connector identity and saved target conversation. Multiple groups share one physical ChatGPT browser, with navigation and submission serialized; their inboxes, bindings and delivery records remain separate. Rotating the MCP URL creates a new secret and revokes the previous active URL.
 
 MCP tool model: ChatGPT registers a remote MCP schema up front, so the ChatGPT Web Model connector advertises a fixed built-in schema instead of extending that schema with newly discovered capability tools. Explicitly disabling CCCC code mode removes its two code-mode tools; daemon restart timing does not collapse the remaining Web Model schema to the smaller ordinary-actor fallback. Calls are still authorized with the connector-bound actor identity. A Web Model actor cannot bypass that surface by naming an unadvertised tool directly. A group foreman can reach an enabled built-in capability-pack tool through `cccc_capability_use`; a peer cannot use that route to acquire foreman management authority.
 
@@ -27,10 +27,64 @@ MCP tool model: ChatGPT registers a remote MCP schema up front, so the ChatGPT W
 
 - A CCCC group with an attached workspace scope.
 - A running actor with runtime `ChatGPT Web Model`.
-- A public HTTPS URL that reaches `cccc web`.
+- Either an OpenAI Tunnel forwarding to `cccc mcp --gateway`, or a public HTTPS URL that reaches the existing actor-bound HTTP connector.
 - A ChatGPT account with remote MCP connector support.
 
 ChatGPT developer mode supports remote MCP over SSE or streamable HTTP and does not connect to local MCP servers. Full local development requires the selected ChatGPT conversation to expose the CCCC connector and its write-capable tools. If the selected model cannot see the CCCC connector, that chat has no CCCC local access.
+
+## One Tunnel, multiple ChatGPT conversations
+
+The optional native entry `cccc mcp --gateway` accepts conversation identity from
+the trusted transport's `params._meta["openai/session"]`. It is a stdio mode, not
+an unauthenticated public HTTP endpoint. Normal `cccc mcp` and existing
+actor-specific connectors keep their existing behavior.
+
+Run the Web UI and the MCP process with the **same `CCCC_HOME`**. Register the
+native command as the target of an existing OpenAI Tunnel using
+`tunnel-client runtimes connect`; credentials belong in the tunnel client's
+`file:` or `env:` references, not CCCC source or command literals. No public Web
+port is required for this path. Keep the native Web process running when browser
+return delivery is needed.
+
+In a ChatGPT conversation that has the App enabled:
+
+- `cccc_group_create(path, title?, chat_url?)` creates the project group and its
+  web Foreman, then binds the calling conversation. Repeating the same request
+  reuses the group and does not change the installation's global active group.
+- `cccc_group_bind(group, chat_url?)` binds an unowned existing group or updates
+  this conversation's own return target. It does not take over another Chat or
+  silently replace a local Foreman.
+- For an intentional replacement, select the group and web actor in Web Model
+  settings, choose **Copy connection instructions**, and paste them into the
+  new Chat. `cccc_session_bind(code)` consumes the ten-minute, one-use code.
+  Issuing a code keeps the previous Chat working; successful use invalidates it.
+
+`inbound_bound` confirms tool access only. `callback_target_ready` confirms a
+saved stable `/c/...` URL, not a successful browser delivery. Without a URL the
+status is `needs_chat_url`: local member management and dispatch work, but the
+browser cannot wake that Chat. After changing Chats, explicitly save the new
+return target; the previous Chat's target is no longer eligible for delivery.
+
+The bound Foreman can manage local members of its own group, including their
+configuration. It cannot select another group by supplying a different group ID.
+Nested capability/code-mode calls preserve the same boundary. The **Change
+Foreman** menu uses the existing actor editor: choose Web model or Local model,
+then review and save; choosing the menu item alone changes no running actor.
+
+A managed local member's first delegated turn uses its existing structured
+provider connection, rather than treating an early terminal paste as proof of
+admission. Later terminal interaction remains available. When a member ends a
+turn, an existing Mail report to its web Foreman is promoted using native message
+delivery; an existing direct report is reused. Only a missing report produces a
+short deduplicated reminder. This never marks the overall task complete. Paused
+or stopped groups are not automatically resumed.
+
+Browser operations share one physical page. A busy page can delay another group's
+browser notification, but does not block that group's local tools or local agents.
+This baseline does not implement a new global task-completion or restart policy.
+
+The original actor-bound HTTP setup remains available below and is collapsed in
+the Web Model settings panel.
 
 ## Zero-to-ready setup
 
@@ -148,7 +202,7 @@ On native Linux, projected headed browsers require `Xvfb`. CCCC starts a private
 
 On macOS, the shared ChatGPT browser runs headless by default. The daemon still uses the installed system Chrome or Edge, the same persistent login profile, and the same CDP-backed **Page** projection, but it does not open or focus a separate desktop window during warmup or delivery. Sign-in and normal interaction happen through the embedded **Page** view. For temporary compatibility troubleshooting only, set `CCCC_WEB_MODEL_BROWSER_HEADLESS=0` and restart the ChatGPT browser session to restore the visible system-browser window.
 
-The default submit timeout is 30 seconds and can be changed with `CCCC_WEB_MODEL_BROWSER_DELIVERY_TIMEOUT_SECONDS`. This is the outer delivery hard cap; slow page loads, composer waits, safe `Send prompt` discovery, and new-chat binding share that budget and may not each consume their full internal timeout. Browser startup is handled by the projected browser runtime, which requires a real system Chrome or Edge CDP-capable browser for ChatGPT. Automatic page reload recovery is disabled by default. To opt into the legacy recovery behavior for a fragile ChatGPT browser session, set `CCCC_WEB_MODEL_BROWSER_AUTO_RELOAD=1`; the inactivity threshold is controlled by `CCCC_WEB_MODEL_BROWSER_AUTO_RELOAD_INACTIVITY_SECONDS`. After a submit action, either an exact batch-marker echo or an increase in visible ChatGPT user-message nodes is direct acceptance evidence. Composer clearing, a conversation URL change, or generation controls alone remain corroborating but insufficient. Persisted ambiguous deliveries that contain direct user-message evidence are reconciled without resending, and a validated observed `/c/...` URL is bound as the conversation target. Once CCCC invokes a submit click, an exception is recorded as `click_dispatch_unknown`; browser timing or a pre-existing running indicator cannot prove that the click did or did not dispatch, so the message is not automatically re-bundled. A pre-submit deferral is different: no submit action was attempted, so the delivery is recorded as failed and remains retryable. CCCC may stage the batch in its daemon-owned composer before discovering that no safe submit control is currently available; it only reuses staged text when its normalized content exactly matches the current batch, and it does not treat staging as submission. CCCC keeps one single-flight worker, retries with bounded backoff, and does not append duplicate submitting events for the same batch. Each attempt snapshots the pending direct-delivery messages that exist at that time, so a newly arrived message may be coalesced into the next batch and produce a new deterministic delivery id. If the retry budget is exhausted, a failed batch remains eligible for the next normal trigger; direct-delivery events that arrived after the final snapshot produce a different delivery id and receive one fresh worker after single-flight is released. Inbox unread state is independent throughout this process.
+The default submit timeout is 30 seconds and can be changed with `CCCC_WEB_MODEL_BROWSER_DELIVERY_TIMEOUT_SECONDS`. This is the outer delivery hard cap; slow page loads, composer waits, safe `Send prompt` discovery, and new-chat binding share that budget and may not each consume their full internal timeout. Browser startup is handled by the projected browser runtime, which requires a real system Chrome or Edge CDP-capable browser for ChatGPT. Automatic page reload recovery is disabled by default. To opt into the legacy recovery behavior for a fragile ChatGPT browser session, set `CCCC_WEB_MODEL_BROWSER_AUTO_RELOAD=1`; the inactivity threshold is controlled by `CCCC_WEB_MODEL_BROWSER_AUTO_RELOAD_INACTIVITY_SECONDS`. After a submit action, either an exact batch-marker echo or an increase in visible ChatGPT user-message nodes is direct acceptance evidence. Composer clearing, a conversation URL change, or generation controls alone remain corroborating but insufficient. Persisted ambiguous deliveries that contain direct user-message evidence are reconciled without resending, and a validated observed `/c/...` URL is bound as the conversation target. Once CCCC invokes a submit click, an exception is recorded as `click_dispatch_unknown`; browser timing or a pre-existing running indicator cannot prove that the click did or did not dispatch, so the message is not automatically re-bundled. A pre-submit deferral is different: no submit action was attempted, so the delivery is recorded as failed and remains retryable. CCCC checks for an active response or unrelated user draft before staging the batch; it only reuses staged text when its normalized content exactly matches the current batch, and it does not treat staging as submission. CCCC keeps one single-flight worker, retries with bounded backoff, and does not append duplicate submitting events for the same batch. Each attempt snapshots the pending direct-delivery messages that exist at that time, so a newly arrived message may be coalesced into the next batch and produce a new deterministic delivery id. If the retry budget is exhausted, a failed batch remains eligible for the next normal trigger; direct-delivery events that arrived after the final snapshot produce a different delivery id and receive one fresh worker after single-flight is released. Inbox unread state is independent throughout this process.
 
 The embedded panel offers **Page** and **Browser** views over the same real browser session. The actor runtime panel defaults to **Page** for a larger, content-focused workspace; ChatGPT setup defaults to **Browser** because sign-in and browser UI can matter there. Switching views does not restart Chrome or change the current chat. **Browser** uses a localhost VNC projection when the session is running on a CCCC-owned Xvfb display and `x11vnc` is installed. Without that capability, **Browser** is unavailable while the isolated browser and built-in CDP page view continue to work. The VNC server binds to localhost and is intended for trusted single-user hosts or containers; remote access still goes through the authenticated CCCC WebSocket bridge. Set `CCCC_PROJECTED_BROWSER_VNC=0` to disable the Browser view while diagnosing viewer issues.
 
@@ -236,7 +290,7 @@ curl -s "$CONNECTOR_URL" \
 - Unknown or malformed tool calls return JSON-RPC protocol errors. A known tool that fails execution or policy checks returns an MCP tool result with `isError: true`; the native server includes the daemon's machine-readable `code`, `message`, and non-empty `details` in `structuredContent.error` as well as the text content.
 - Only tools whose declared operation is read-only are annotated with `readOnlyHint: true`. Mixed-action and mutating tools remain unannotated so a client is not encouraged to bypass approval for a write path.
 - The ChatGPT Web Model `tools/list` is intentionally stable for ChatGPT registration. Direct calls remain limited to that advertised surface; hidden built-in capability-pack tools must pass through `cccc_capability_use` and its actor-role checks.
-- ChatGPT Web Model local-power tools (`cccc_repo_edit`, `cccc_shell`, `cccc_git`) are actor-bound to the single ChatGPT Web Model actor identity and constrained to the active workspace scope.
+- ChatGPT Web Model local-power tools (`cccc_repo_edit`, `cccc_shell`, `cccc_git`) are bound to the selected group’s ChatGPT Web Model actor identity and constrained to the active workspace scope.
 - ChatGPT proactive delivery depends on the shared projected browser session and an active logged-in browser profile.
 - New ChatGPT chats are supported through a saved pending target: the first successful browser delivery commits the submitted batch, then CCCC waits for ChatGPT to expose the concrete `chatgpt.com/c/...` URL before binding future deliveries to that conversation. Ordinary browser history such as `last_tab_url` is diagnostic only and is never treated as a saved target.
 - GPT-5.x is selected inside ChatGPT. CCCC treats ChatGPT Web Model as one browser-delivery/runtime path, not as a separate provider per model.

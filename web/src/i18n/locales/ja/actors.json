@@ -1,4 +1,7 @@
 {
+  "changeForeman": "Foreman を変更",
+  "webForeman": "Web モデル",
+  "localForeman": "ローカルモデル",
   "agentNotFound": "エージェントが見つかりません",
   "loadingAgent": "エージェントを読み込み中…",
   "foreman": "フォアマン",

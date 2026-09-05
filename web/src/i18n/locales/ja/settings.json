@@ -1223,6 +1223,16 @@
         "mcpAppTitle": "2. CCCC MCP app を接続",
         "deliveryTargetTitle": "3. 配信先を選択"
       },
+      "binding": {
+        "title": "会話接続",
+        "statusBound": "バインド済み",
+        "statusUnbound": "未バインド",
+        "boundDetail": "このグループには ChatGPT の会話が紐付いています。ブラウザーへの返信には、送信先の保存とログインが必要です。",
+        "unboundDetail": "ChatGPT の会話がまだ紐付いていません。Foreman にする会話に接続手順を貼り付けてください。",
+        "hint": "会話の識別と返信先の保存は別の手順です。ここでは会話の紐付けのみを確認します。",
+        "template": "グループ「{{group}}」の Foreman {{actor}} にこの会話を紐付け、順に呼び出してください：\ncccc_session_bind(code={{code}})\ncccc_bootstrap()\n実際のグループとブラウザー返信先の状態を報告してください。コードは10分間有効で、一度だけ使えます。",
+        "legacySetup": "従来の接続設定と権限の説明"
+      },
       "next": {
         "prefix": "次: {{action}}",
         "setPublicHttps": "Web Access で公開 HTTPS URL を設定します。",
@@ -1294,7 +1304,8 @@
         "useCurrentTab": "現在の tab を使う",
         "reloadChatGpt": "ChatGPT ページをリロード",
         "checkStatus": "状態を確認",
-        "closeBrowser": "ブラウザを閉じる"
+        "closeBrowser": "ブラウザを閉じる",
+        "copyBindingInstructions": "接続手順をコピー"
       },
       "activity": {
         "notSeenYet": "まだ未確認",
@@ -1313,6 +1324,7 @@
         "browserClosed": "ChatGPT ブラウザセッションを閉じました。",
         "newChatSelected": "次回配信で新しい ChatGPT 会話を使います。",
         "conversationBound": "ChatGPT 会話をこの actor にバインドしました。",
+        "bindingCopied": "接続手順をコピーしました。",
         "targetSavedExisting": "保存しました。次回配信はこの ChatGPT 会話を使います。",
         "targetSavedNewChat": "保存しました。次回配信で新しい ChatGPT 会話を開始します。",
         "copied": "{{label}} をコピーしました。",
@@ -1330,7 +1342,8 @@
         "revokeConnectorFailed": "connector の取り消しに失敗しました。",
         "restartBrowserFailed": "ChatGPT ブラウザの再起動に失敗しました。",
         "closeBrowserFailed": "ChatGPT ブラウザセッションの終了に失敗しました。",
-        "bindConversationFailed": "ChatGPT 会話のバインドに失敗しました。"
+        "bindConversationFailed": "ChatGPT 会話のバインドに失敗しました。",
+        "bindingRequestFailed": "使い捨て接続コードの発行に失敗しました。"
       },
       "nextAction": {
         "open_chatgpt": "ChatGPT を開く",
