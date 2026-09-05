@@ -1237,7 +1237,9 @@
         "bindTarget": "既存の ChatGPT 会話を保存するか、対象 URL を貼り付けるか、次回配信で新しい会話を選びます。",
         "ready": "ブラウザ配信の準備ができています。"
       },
-      "queue": { "queued": "{{count}} 件キュー済み" },
+      "queue": {
+        "queued": "{{count}} 件キュー済み"
+      },
       "warnings": {
         "rotateOldConnector": "この古い connector を一度ローテーションして、コピー可能な ChatGPT MCP URL を生成してください。",
         "localMcpUrl": "MCP URL はローカル専用です。Web ホスト型モデルには公開 HTTPS URL が必要です。",
@@ -1304,7 +1306,9 @@
         "seen": "確認済み",
         "seenAt": "{{time}} に確認"
       },
-      "copyLabels": { "mcpUrl": "MCP URL" },
+      "copyLabels": {
+        "mcpUrl": "MCP URL"
+      },
       "notices": {
         "connectorRotated": "Connector をローテーションしました。以前の connector は取り消されました。",
         "connectorCreated": "Connector を作成しました。",
@@ -1342,7 +1346,29 @@
         "inspect_error": "エラーを確認",
         "login_chatgpt": "ChatGPT にサインイン"
       },
-      "common": { "none": "なし", "notSet": "未設定" }
+      "common": {
+        "none": "なし",
+        "notSet": "未設定"
+      },
+      "t05": {
+        "selectGroup": "グループを選択",
+        "groupScope": "会話の紐付けと返信先はグループごとに保存します。このページは Web 接続の設定用です。",
+        "identity": "このグループの会話を接続",
+        "bound": "会話の識別情報を紐付け済み",
+        "unbound": "会話は未設定",
+        "copy": "紐付け手順をコピー",
+        "disconnect": "会話の紐付けを解除",
+        "copyHint": "既存のトンネル用アプリでは紐付け手順をコピーしてください。従来の直接接続設定は下にあります。",
+        "identityNote": "紐付けは会話から操作できるグループを指定します。返信には送信先の保存とブラウザー・接続機能の準備も必要です。",
+        "original": "従来の直接接続設定と権限の説明",
+        "sharedBrowser": "専用ブラウザーを各グループで共有します。画面の非表示は送信を止めませんが、終了・再起動は全グループに影響します。",
+        "view": "画面を表示",
+        "hide": "画面を隠す",
+        "copied": "このグループの紐付け手順をコピーしました",
+        "invalidCode": "コードが無効または期限切れです。再取得してください。",
+        "emptyGroup": "このグループには Web メンバーがいません。グループ名の横の「メンバー」から追加・変更してください。",
+        "instructions": "この会話をグループ「{{group}}」の {{actor}} に紐付けてください。cccc_session_bind(code={{code}})、cccc_bootstrap() の順で呼び出します。コードは10分間有効で一度だけ使えます。グループと返信先の状態を報告し、新しい作業は割り当てないでください。"
+      }
     }
   },
   "webAccess": {

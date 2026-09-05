@@ -279,5 +279,18 @@
   "historyRetry": "再試行",
   "historyStart": "保持されている履歴の先頭です",
   "historyEmpty": "このエージェントの保持されたターミナル履歴はまだありません。",
-  "historyTruncated": "古い出力はバッファから破棄済みです。"
+  "historyTruncated": "古い出力はバッファから破棄済みです。",
+  "t05Members": {
+    "entry": "メンバー {{count}}",
+    "title": "このグループのメンバー",
+    "nativeEditors": "メンバーを選ぶと元の詳細画面が開きます。設定・起動・停止・削除はそこで行います。",
+    "foreman": "Foreman",
+    "peer": "メンバー",
+    "empty": "このグループにはまだメンバーがいません。",
+    "changeForeman": "Foreman を変更",
+    "web_model": "Web モデル",
+    "local": "ローカルモデル",
+    "add": "メンバーを追加",
+    "noLocalRuntime": "使用できるローカル実行環境がありません。先にインストールしてください。"
+  }
 }

@@ -1,3 +1,4 @@
+import { GroupMembersMenu } from "./GroupMembersMenu";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Actor, GroupDoc, GroupRuntimeStatus, TextScale, Theme } from "../../types";
@@ -42,6 +43,8 @@ export interface AppHeaderProps {
   busy: string;
   onOpenSidebar: () => void;
   onOpenGroupEdit?: () => void;
+  onOpenMember?: (actorId: string) => void;
+  onEditMember?: (actor: Actor) => void;
   onOpenSearch: () => void;
   onOpenContext: () => void;
   onStartGroup: () => void;
@@ -68,6 +71,8 @@ export function AppHeader({
   busy,
   onOpenSidebar,
   onOpenGroupEdit,
+  onOpenMember,
+  onEditMember,
   onOpenSearch,
   onOpenContext,
   onStartGroup,
@@ -223,6 +228,17 @@ export function AppHeader({
             )}
             {selectedStatus && <GroupStatusIndicator status={selectedStatus} variant="badge" />}
           </div>
+
+          {selectedGroupId && onOpenMember && onEditMember && (
+            <GroupMembersMenu
+              key={selectedGroupId}
+              groupId={selectedGroupId}
+              actors={actors}
+              readOnly={Boolean(webReadOnly)}
+              onOpenActor={onOpenMember}
+              onEditActor={onEditMember}
+            />
+          )}
 
           {selectedGroupId && !webReadOnly && onOpenGroupEdit && (
             <IconButton

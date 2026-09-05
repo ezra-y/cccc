@@ -268,6 +268,8 @@ export function AppShell({
           busy={busy}
           onOpenSidebar={onOpenSidebar}
           onOpenGroupEdit={onOpenGroupEdit}
+          onOpenMember={onTabChange}
+          onEditMember={onEditActor}
           onOpenSearch={onOpenSearch}
           onOpenContext={onOpenContext}
           onStartGroup={onStartGroup}

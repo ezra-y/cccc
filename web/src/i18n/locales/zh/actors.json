@@ -279,5 +279,18 @@
   "historyRetry": "重试",
   "historyStart": "已到保留历史的起点",
   "historyEmpty": "该智能体暂无保留的终端历史。",
-  "historyTruncated": "更早的输出已从缓冲区中淘汰。"
+  "historyTruncated": "更早的输出已从缓冲区中淘汰。",
+  "t05Members": {
+    "entry": "成员 {{count}}",
+    "title": "本组成员",
+    "nativeEditors": "点击成员进入原版详情；配置、启停和移除仍在那里操作。",
+    "foreman": "组长",
+    "peer": "成员",
+    "empty": "此工作组还没有成员。",
+    "changeForeman": "更换组长",
+    "web_model": "网页模型",
+    "local": "本地模型",
+    "add": "添加成员",
+    "noLocalRuntime": "没有检测到可用的本地模型，请先完成安装。"
+  }
 }

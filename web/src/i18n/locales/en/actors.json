@@ -279,5 +279,18 @@
   "historyRetry": "Retry",
   "historyStart": "Beginning of retained history",
   "historyEmpty": "No terminal history retained for this agent yet.",
-  "historyTruncated": "Older output has already been discarded from the backlog."
+  "historyTruncated": "Older output has already been discarded from the backlog.",
+  "t05Members": {
+    "entry": "Members {{count}}",
+    "title": "Group members",
+    "nativeEditors": "Open a member’s native details to configure, start, stop or remove them.",
+    "foreman": "Foreman",
+    "peer": "Peer",
+    "empty": "This group has no members yet.",
+    "changeForeman": "Change Foreman",
+    "web_model": "Web model",
+    "local": "Local model",
+    "add": "Add member",
+    "noLocalRuntime": "No available local runtime was detected. Install one first."
+  }
 }

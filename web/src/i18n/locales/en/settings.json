@@ -1237,7 +1237,9 @@
         "bindTarget": "Save an existing ChatGPT conversation, paste a target URL, or choose new-chat delivery.",
         "ready": "Ready for browser delivery."
       },
-      "queue": { "queued": "{{count}} queued" },
+      "queue": {
+        "queued": "{{count}} queued"
+      },
       "warnings": {
         "rotateOldConnector": "Rotate this older connector once to generate a copyable ChatGPT MCP URL.",
         "localMcpUrl": "MCP URL is local-only. Browser-hosted models need a public HTTPS URL.",
@@ -1304,7 +1306,9 @@
         "seen": "seen",
         "seenAt": "seen {{time}}"
       },
-      "copyLabels": { "mcpUrl": "MCP URL" },
+      "copyLabels": {
+        "mcpUrl": "MCP URL"
+      },
       "notices": {
         "connectorRotated": "Connector rotated. Previous connector revoked.",
         "connectorCreated": "Connector created.",
@@ -1342,7 +1346,29 @@
         "inspect_error": "Inspect error",
         "login_chatgpt": "Sign in to ChatGPT"
       },
-      "common": { "none": "none", "notSet": "Not set" }
+      "common": {
+        "none": "none",
+        "notSet": "Not set"
+      },
+      "t05": {
+        "selectGroup": "Choose group",
+        "groupScope": "Each group has its own chat binding and return URL. This page configures web connections, not team membership.",
+        "identity": "Connect this group’s chat",
+        "bound": "Chat identity bound",
+        "unbound": "No chat bound",
+        "copy": "Copy binding instructions",
+        "disconnect": "Disconnect chat",
+        "copyHint": "For the existing tunnel app, copy the binding instructions. Original direct setup remains below.",
+        "identityNote": "A binding selects which group a chat can access. Return delivery also needs a saved target and a working browser and connector.",
+        "original": "Original direct setup and permission notes",
+        "sharedBrowser": "Groups share one dedicated browser. Hiding its preview does not stop delivery; closing or restarting it affects every group.",
+        "view": "Show preview",
+        "hide": "Hide preview",
+        "copied": "Copied binding instructions for this group",
+        "invalidCode": "The code is invalid or expired. Request a new one.",
+        "emptyGroup": "This group has no web member. Use Members beside the group title to add or edit one.",
+        "instructions": "Bind this chat to {{actor}} in group “{{group}}”. Call cccc_session_bind(code={{code}}), then cccc_bootstrap(). The code expires in ten minutes and is single-use. Report the actual group and return-target status; do not dispatch new tasks."
+      }
     }
   },
   "webAccess": {

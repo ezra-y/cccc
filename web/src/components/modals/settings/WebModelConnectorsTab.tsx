@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { T05ChangeMark } from "../../T05ChangeMark";
 import { useTranslation } from "react-i18next";
 import type { Actor, GroupMeta, RemoteAccessState } from "../../../types";
 import * as api from "../../../services/api";
 import { copyTextToClipboard } from "../../../utils/copy";
 import {
-  defaultTargetDraftFromSession,
   isChatGptConversationUrl,
   liveBrowserConversationUrlFromSession,
   savedTargetDraftFromSession,
@@ -124,7 +124,7 @@ function setupPillClass(tone: SetupTone): string {
   return "border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] text-[var(--color-text-secondary)]";
 }
 
-function SetupSection({ title, children }: { title: string; children: ReactNode }) {
+function SetupSection({ title, children }: { title: ReactNode; children: ReactNode }) {
   return (
     <div className="border-t border-[var(--glass-border-subtle)] pt-3 first:border-t-0 first:pt-0">
       <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--color-text-muted)]">
@@ -164,6 +164,7 @@ export default function WebModelConnectorsTab({
   const [groupId, setGroupId] = useState("");
   const [actorId, setActorId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [bindingBusy, setBindingBusy] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
   const [revokeBusyId, setRevokeBusyId] = useState("");
   const [error, setError] = useState("");
@@ -180,6 +181,21 @@ export default function WebModelConnectorsTab({
   const [targetDraftMode, setTargetDraftMode] = useState<TargetDraftMode>("existing");
   const [targetDraftTouched, setTargetDraftTouched] = useState(false);
   const currentSelectionRef = useRef({ groupId: "", actorId: "" });
+  const selectGroup = useCallback((gid: string) => {
+    currentSelectionRef.current = { groupId: gid, actorId: "" };
+    setGroupId(gid);
+    setActorId("");
+    setActors([]);
+    setBrowserSession(null);
+    setBrowserSessionsByActor({});
+    setBrowserBusy(false);
+    setShowBrowserSurface(false);
+    setConversationUrlDraft("");
+    setTargetDraftMode("existing");
+    setTargetDraftTouched(false);
+    setError("");
+    setNotice("");
+  }, []);
 
   useEffect(() => {
     currentSelectionRef.current = { groupId, actorId };
@@ -210,6 +226,7 @@ export default function WebModelConnectorsTab({
       ) || null
     );
   }, [currentGroupActiveConnectors, selectedActor]);
+  const sessionBound = Boolean(selectedConnector?.session_bound);
   const extraChatGptActors = webModelActors.slice(1);
   const configuredPublicUrl = String(
     remoteState?.config?.web_public_url || remoteState?.diagnostics?.web_public_url || "",
@@ -230,7 +247,7 @@ export default function WebModelConnectorsTab({
       selectedHealth?.target?.saved_at ||
       "",
   ).trim();
-  const browserActive = Boolean(selectedBrowserSession?.active || showBrowserSurface);
+  const browserActive = Boolean(selectedBrowserSession?.active);
   const browserReady = Boolean(selectedBrowserSession?.ready);
   const boundConversationUrl = String(selectedBrowserSession?.conversation_url || "").trim();
   const pendingNewChatBind = Boolean(selectedBrowserSession?.pending_new_chat_bind);
@@ -323,22 +340,26 @@ export default function WebModelConnectorsTab({
     Boolean(selectedMcpUrlForValidation) && !isHttpsUrl(selectedMcpUrlForValidation);
   const mcpLastCallFailed = String(selectedConnector?.last_call_status || "").trim() === "error";
   const chatGptSeen = Boolean(selectedConnector?.last_activity_at);
-  const mcpStatusLabel = !selectedConnector
-    ? wm("mcp.urlNotCreated")
-    : !selectedMcpUrl
-      ? wm("mcp.needsRotation")
-      : mcpLastCallFailed
-        ? wm("mcp.lastCallFailed")
-        : chatGptSeen
-          ? wm("activity.seenAt", { time: formatTime(selectedConnector?.last_activity_at) })
-          : wm("mcp.waitingFirstCall");
-  const mcpStatusTone: SetupTone = mcpLastCallFailed
-    ? "warn"
-    : selectedMcpUrl && chatGptSeen
-      ? "ready"
-      : selectedMcpUrl
-        ? "needs"
-        : "needs";
+  const mcpStatusLabel = sessionBound
+    ? wm("t05.bound")
+    : !selectedConnector
+      ? wm("mcp.urlNotCreated")
+      : !selectedMcpUrl
+        ? wm("mcp.needsRotation")
+        : mcpLastCallFailed
+          ? wm("mcp.lastCallFailed")
+          : chatGptSeen
+            ? wm("activity.seenAt", { time: formatTime(selectedConnector?.last_activity_at) })
+            : wm("mcp.waitingFirstCall");
+  const mcpStatusTone: SetupTone = sessionBound
+    ? "ready"
+    : mcpLastCallFailed
+      ? "warn"
+      : selectedMcpUrl && chatGptSeen
+        ? "ready"
+        : selectedMcpUrl
+          ? "needs"
+          : "needs";
   const webAccessReady = publicEndpointReady && uiAccessTokenPresent;
   const webAccessPrerequisiteLabel = webAccessReady
     ? wm("prerequisites.webAccessReady")
@@ -346,41 +367,30 @@ export default function WebModelConnectorsTab({
       ? wm("prerequisites.accessTokenNeeded")
       : wm("prerequisites.publicHttpsNeeded");
   const setupReady =
-    webAccessReady &&
+    (sessionBound || webAccessReady) &&
     selectedActorRunning &&
     browserReady &&
-    Boolean(selectedMcpUrl) &&
-    chatGptSeen &&
+    (sessionBound || (Boolean(selectedMcpUrl) && chatGptSeen)) &&
     !mcpLastCallFailed &&
     Boolean(boundConversationUrl || pendingNewChatBind);
   const runtimeStatus = setupReady
     ? { label: wm("summary.ready"), tone: "ready" as const }
     : mcpLastCallFailed
       ? { label: wm("summary.needsAttention"), tone: "warn" as const }
-      : selectedMcpUrl && !chatGptSeen
+      : !sessionBound && selectedMcpUrl && !chatGptSeen
         ? { label: wm("summary.waitingForMcp"), tone: "needs" as const }
         : { label: wm("summary.needsSetup"), tone: "needs" as const };
-  const nextSetupAction = !publicEndpointReady
-    ? wm("next.setPublicHttps")
-    : !uiAccessTokenPresent
-      ? wm("next.createAccessToken")
-      : !selectedActor
-        ? wm("next.createActorInGroup")
-        : !selectedActorRunning
-          ? wm("next.startActorInGroup")
-          : !browserReady
-            ? wm("next.signIn")
-            : !selectedMcpUrl
-              ? selectedConnector
-                ? wm("next.rotateConnector")
-                : wm("next.createConnector")
-              : mcpLastCallFailed
-                ? wm("next.inspectMcpError")
-                : !chatGptSeen
-                  ? wm("next.pasteMcpUrl")
-                  : !boundConversationUrl && !pendingNewChatBind
-                    ? wm("next.bindTarget")
-                    : healthNextActionText(selectedHealth, wm) || wm("next.ready");
+  const nextSetupAction = !selectedActor
+    ? wm("next.createActorInGroup")
+    : !sessionBound
+      ? wm("t05.copyHint")
+      : !selectedActorRunning
+        ? wm("next.startActorInGroup")
+        : !browserReady
+          ? wm("next.signIn")
+          : !boundConversationUrl && !pendingNewChatBind
+            ? wm("next.bindTarget")
+            : healthNextActionText(selectedHealth, wm) || wm("next.ready");
   const mcpInstructionDetail = selectedMcpUrl
     ? wm("mcp.copyReadyHint")
     : selectedConnector
@@ -389,13 +399,10 @@ export default function WebModelConnectorsTab({
 
   useEffect(() => {
     if (targetDraftTouched) return;
-    const draft = defaultTargetDraftFromSession(
-      selectedBrowserSession,
-      currentBrowserConversationUrl,
-    );
+    const draft = savedTargetDraftFromSession(selectedBrowserSession);
     setTargetDraftMode(draft.mode);
     setConversationUrlDraft(draft.url);
-  }, [currentBrowserConversationUrl, selectedBrowserSession, targetDraftTouched]);
+  }, [selectedBrowserSession, targetDraftTouched]);
 
   useEffect(() => {
     if (isActive) setTargetDraftTouched(false);
@@ -579,43 +586,10 @@ export default function WebModelConnectorsTab({
 
   useEffect(() => {
     if (!isActive || !groups.length) return;
-    let cancelled = false;
-    const locateExistingActor = async () => {
-      const preferredGroupId = String(currentGroupId || "").trim();
-      const orderedGroups = preferredGroupId
-        ? [
-            ...groups.filter((group) => String(group.group_id || "").trim() === preferredGroupId),
-            ...groups.filter((group) => String(group.group_id || "").trim() !== preferredGroupId),
-          ]
-        : groups;
-      for (const group of orderedGroups) {
-        const gid = String(group.group_id || "").trim();
-        if (!gid) continue;
-        const resp = await api.fetchActors(gid, true, { noCache: true });
-        if (cancelled) return;
-        if (!resp.ok) continue;
-        const found = (resp.result?.actors || []).find((actor) =>
-          isStandardChatGptWebModelActor(actor),
-        );
-        if (found) {
-          setGroupId(gid);
-          setActors(resp.result?.actors || []);
-          setActorId(String(found.id || "").trim());
-          return;
-        }
-      }
-      setGroupId("");
-      setActors([]);
-      setActorId("");
-      setBrowserSession(null);
-      setBrowserSessionsByActor({});
-      setShowBrowserSurface(false);
-    };
-    void locateExistingActor();
-    return () => {
-      cancelled = true;
-    };
-  }, [currentGroupId, groups, isActive]);
+    if (groups.some((group) => group.group_id === currentSelectionRef.current.groupId)) return;
+    const preferred = groups.find((group) => group.group_id === currentGroupId) || groups[0];
+    selectGroup(preferred.group_id);
+  }, [currentGroupId, groups, isActive, selectGroup]);
 
   useEffect(() => {
     if (!isActive || !groupId) {
@@ -661,18 +635,31 @@ export default function WebModelConnectorsTab({
   useEffect(() => {
     if (!isActive || !groupId || !actorId || !selectedActor) return;
     let cancelled = false;
+    let refreshing = false;
     const refresh = async () => {
-      const gid = groupId;
-      const aid = actorId;
-      const resp = await api.fetchWebModelBrowserSession(gid, aid, { inspect: true });
-      if (cancelled) return;
-      if (resp.ok) {
-        const nextSession = resp.result?.browser_session || {};
-        const key = browserSessionKey(gid, aid);
-        setBrowserSessionsByActor((current) => ({ ...current, [key]: nextSession }));
-        const currentSelection = currentSelectionRef.current;
-        if (gid === currentSelection.groupId && aid === currentSelection.actorId)
-          setBrowserSession(nextSession);
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        const gid = groupId;
+        const aid = actorId;
+        const [resp, bindings] = await Promise.all([
+          api.fetchWebModelBrowserSession(gid, aid, { inspect: false }),
+          api.fetchWebModelConnectors(),
+        ]);
+        if (cancelled) return;
+        if (bindings.ok) setConnectors(bindings.result.connectors || []);
+        if (resp.ok) {
+          const nextSession = resp.result?.browser_session || {};
+          const key = browserSessionKey(gid, aid);
+          setBrowserSessionsByActor((current) => ({ ...current, [key]: nextSession }));
+          const currentSelection = currentSelectionRef.current;
+          if (gid === currentSelection.groupId && aid === currentSelection.actorId)
+            setBrowserSession(nextSession);
+        }
+      } catch {
+        /* The next native poll retries transient read failures. */
+      } finally {
+        refreshing = false;
       }
     };
     void refresh();
@@ -686,6 +673,7 @@ export default function WebModelConnectorsTab({
   }, [actorId, groupId, isActive, selectedActor]);
 
   const createConnector = async (targetActorId = actorId) => {
+    const gid = groupId;
     const aid = String(targetActorId || "").trim();
     if (!groupId || !aid) {
       setError(wm("errors.selectActorFirst"));
@@ -696,11 +684,12 @@ export default function WebModelConnectorsTab({
     try {
       const targetActor = webModelActors.find((actor) => actor.id === aid);
       const resp = await api.createWebModelConnector({
-        groupId,
+        groupId: gid,
         actorId: aid,
         provider: DEFAULT_PROVIDER,
         label: String(targetActor?.title || targetActor?.id || aid),
       });
+      if (!matchesWebModelActorSelection(currentSelectionRef.current, gid, aid)) return null;
       if (resp.ok) {
         setActorId(aid);
         const replaced = resp.result?.replaced_connector_ids || [];
@@ -708,6 +697,7 @@ export default function WebModelConnectorsTab({
           replaced.length ? wm("notices.connectorRotated") : wm("notices.connectorCreated"),
         );
         await loadConnectors();
+        return resp.result.connector;
       } else {
         setError(resp.error?.message || wm("errors.createConnectorFailed"));
       }
@@ -738,10 +728,27 @@ export default function WebModelConnectorsTab({
   };
 
   const openBrowserLogin = async () => {
+    const gid = groupId;
+    const aid = actorId;
+    setBrowserBusy(true);
     setError("");
-    setShowBrowserSurface(true);
-    setBrowserSurfaceRefreshNonce((value) => value + 1);
-    pushNotice(wm("notices.signInSurfaceOpened"));
+    try {
+      const result = await startBrowserSurfaceSession({ width: 1366, height: 900 });
+      if (!matchesWebModelActorSelection(currentSelectionRef.current, gid, aid)) return;
+      if (!result.ok) {
+        setError(result.error.message);
+        return;
+      }
+      setShowBrowserSurface(true);
+      setBrowserSurfaceRefreshNonce((value) => value + 1);
+      pushNotice(wm("notices.signInSurfaceOpened"));
+    } catch (error) {
+      if (matchesWebModelActorSelection(currentSelectionRef.current, gid, aid))
+        setError(String(error));
+    } finally {
+      if (matchesWebModelActorSelection(currentSelectionRef.current, gid, aid))
+        setBrowserBusy(false);
+    }
   };
 
   const checkBrowserSessionStatus = async () => {
@@ -772,6 +779,12 @@ export default function WebModelConnectorsTab({
         const currentSelection = currentSelectionRef.current;
         if (gid === currentSelection.groupId && aid === currentSelection.actorId)
           setBrowserSession(nextSession);
+        if (!matchesWebModelActorSelection(currentSelectionRef.current, gid, aid)) return;
+        const reopened = await startBrowserSurfaceSession({ width: 1366, height: 900 });
+        if (!reopened.ok) {
+          setError(reopened.error.message);
+          return;
+        }
         setShowBrowserSurface(true);
         setBrowserSurfaceRestartNonce((value) => value + 1);
         pushNotice(wm("notices.browserRestarted"));
@@ -866,6 +879,46 @@ export default function WebModelConnectorsTab({
     await bindConversation(targetDraftUrl, { notice: wm("notices.targetSavedExisting") });
   };
 
+  const copyBinding = async () => {
+    const gid = groupId;
+    const aid = actorId;
+    if (bindingBusy || !gid || !aid) return;
+    setBindingBusy(true);
+    setError("");
+    try {
+      const connector = selectedConnector || (await createConnector(aid));
+      if (!connector || !matchesWebModelActorSelection(currentSelectionRef.current, gid, aid))
+        return;
+      const result = await api.createWebModelConnectorBinding(connector.connector_id);
+      if (!matchesWebModelActorSelection(currentSelectionRef.current, gid, aid)) return;
+      if (!result.ok) throw new Error(result.error.message);
+      const binding = result.result;
+      if (
+        binding.group_id !== gid ||
+        binding.actor_id !== aid ||
+        !binding.code ||
+        !Number.isFinite(Date.parse(binding.binding_expires_at)) ||
+        Date.parse(binding.binding_expires_at) <= Date.now()
+      )
+        throw new Error(wm("t05.invalidCode"));
+      const copied = await copyTextToClipboard(
+        wm("t05.instructions", {
+          group: groups.find((group) => group.group_id === gid)?.title || gid,
+          actor: aid,
+          code: JSON.stringify(binding.code),
+          interpolation: { escapeValue: false },
+        }),
+      );
+      if (matchesWebModelActorSelection(currentSelectionRef.current, gid, aid))
+        pushNotice(copied ? wm("t05.copied") : wm("notices.copyFailed"));
+    } catch (error) {
+      if (matchesWebModelActorSelection(currentSelectionRef.current, gid, aid))
+        setError(String(error));
+    } finally {
+      setBindingBusy(false);
+    }
+  };
+
   const copyValue = async (value: string, labelText: string) => {
     const ok = await copyTextToClipboard(value);
     pushNotice(ok ? wm("notices.copied", { label: labelText }) : wm("notices.copyFailed"));
@@ -907,12 +960,34 @@ export default function WebModelConnectorsTab({
           </div>
         ) : null}
 
+        <div data-t05-change="web-group-selector" className="space-y-2">
+          <label className={labelClass(isDark)} htmlFor="t05-web-group">
+            {wm("t05.selectGroup")}
+            <T05ChangeMark />
+          </label>
+          <select
+            id="t05-web-group"
+            value={groupId}
+            onChange={(event) => selectGroup(event.target.value)}
+            className={inputClass(isDark)}
+          >
+            {!groupId && <option value="">{wm("t05.selectGroup")}</option>}
+            {groups.map((group) => (
+              <option key={group.group_id} value={group.group_id}>
+                {group.title || group.group_id}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-[var(--color-text-tertiary)]">{wm("t05.groupScope")}</p>
+        </div>
+
         <section className={settingsWorkspacePanelClass(isDark)}>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <div className="text-sm font-semibold text-[var(--color-text-primary)]">
                   {wm("summary.title")}
+                  <T05ChangeMark />
                 </div>
                 <span
                   className={[
@@ -930,30 +1005,10 @@ export default function WebModelConnectorsTab({
               </div>
               <div className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
                 {wm("next.prefix", { action: nextSetupAction })}
+                <T05ChangeMark />
               </div>
             </div>
           </div>
-          {!webAccessReady ? (
-            <div className="mt-4 flex flex-col gap-3 border-t border-[var(--glass-border-subtle)] pt-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
-                <div className="text-xs font-medium text-[var(--color-text-primary)]">
-                  {wm("summary.webAccess")}
-                </div>
-                <div className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
-                  {webAccessPrerequisiteLabel}
-                </div>
-              </div>
-              {onOpenWebAccess ? (
-                <button
-                  type="button"
-                  onClick={onOpenWebAccess}
-                  className={`${secondaryButtonClass("sm")} shrink-0`}
-                >
-                  {wm("buttons.openWebAccess")}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
           {extraChatGptActors.length ? (
             <div className="mt-3 text-xs leading-5 text-amber-700 dark:text-amber-300">
               {wm("actorSection.multipleWarning")}
@@ -967,7 +1022,8 @@ export default function WebModelConnectorsTab({
               {wm("empty.title")}
             </div>
             <p className="mt-1 text-sm leading-6 text-[var(--color-text-tertiary)]">
-              {wm("empty.description")}
+              {wm("t05.emptyGroup")}
+              <T05ChangeMark />
             </p>
           </section>
         ) : null}
@@ -996,7 +1052,17 @@ export default function WebModelConnectorsTab({
             </div>
 
             <div className="mt-4 space-y-4">
-              <SetupSection title={wm("chatSetup.accountTitle")}>
+              <SetupSection
+                title={
+                  <span data-t05-change="shared-browser">
+                    {wm("chatSetup.accountTitle")}
+                    <T05ChangeMark />
+                  </span>
+                }
+              >
+                <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
+                  {wm("t05.sharedBrowser")}
+                </p>
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div className="min-w-0 text-sm leading-6 text-[var(--color-text-secondary)]">
                     <span className="font-semibold text-[var(--color-text-primary)]">
@@ -1027,6 +1093,16 @@ export default function WebModelConnectorsTab({
                       }
                     >
                       {wm("buttons.openChatGpt")}
+                      <T05ChangeMark />
+                    </button>
+                    <button
+                      type="button"
+                      data-t05-change="preview-toggle"
+                      onClick={() => setShowBrowserSurface((value) => !value)}
+                      className={secondaryButtonClass("sm")}
+                    >
+                      {showBrowserSurface ? wm("t05.hide") : wm("t05.view")}
+                      <T05ChangeMark />
                     </button>
                     <button
                       type="button"
@@ -1051,6 +1127,7 @@ export default function WebModelConnectorsTab({
                         className={secondaryButtonClass("sm")}
                       >
                         {wm("buttons.reloadChatGpt")}
+                        <T05ChangeMark />
                       </button>
                     </div>
                     <ProjectedBrowserSurfacePanel
@@ -1060,7 +1137,6 @@ export default function WebModelConnectorsTab({
                       defaultViewerMode="browser"
                       viewportClassName="h-[68vh] min-h-[460px] max-h-[780px]"
                       loadSession={loadBrowserSurfaceSession}
-                      startSession={startBrowserSurfaceSession}
                       webSocketUrl={api.getWebModelBrowserSurfaceWebSocketUrl(groupId, actorId)}
                       fallbackUrl="https://chatgpt.com/"
                       labels={{
@@ -1078,86 +1154,160 @@ export default function WebModelConnectorsTab({
                 ) : null}
               </SetupSection>
 
-              <SetupSection title={wm("chatSetup.mcpAppTitle")}>
-                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span
-                        className={[
-                          "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
-                          setupPillClass(mcpStatusTone),
-                        ].join(" ")}
-                      >
-                        {mcpStatusLabel}
-                      </span>
-                    </div>
-                    <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
-                      {mcpInstructionDetail}
-                    </p>
-                    {!chatGptSeen ? (
-                      <>
-                        <ol className="mt-3 list-decimal space-y-1 pl-4 text-xs leading-5 text-[var(--color-text-tertiary)]">
-                          <li>{wm("mcp.instructionOpenSettings")}</li>
-                          <li>{wm("mcp.instructionCreateApp")}</li>
-                          <li>{wm("mcp.instructionEnableConnector")}</li>
-                        </ol>
-                        <div className="mt-3 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
-                          <span>{wm("mcp.permissionHint")}</span>
-                          <a
-                            href="https://help.openai.com/en/articles/11487775-apps-in-chatgpt"
-                            target="_blank"
-                            rel="noreferrer"
-                            className="ml-2 font-semibold underline-offset-2 hover:underline"
-                          >
-                            {wm("mcp.permissionDocsLink")}
-                          </a>
-                        </div>
-                      </>
-                    ) : null}
-                    {selectedConnector && !selectedMcpUrl ? (
-                      <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                        {wm("warnings.rotateOldConnector")}
-                      </div>
-                    ) : null}
-                    {mcpUrlLocalWarning ? (
-                      <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                        {wm("warnings.localMcpUrl")}
-                      </div>
-                    ) : null}
-                    {mcpUrlHttpsWarning && !mcpUrlLocalWarning ? (
-                      <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                        {wm("warnings.nonHttpsMcpUrl")}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
-                    {selectedMcpUrl ? (
-                      <button
-                        type="button"
-                        onClick={() => void copyValue(selectedMcpUrl, wm("copyLabels.mcpUrl"))}
-                        className={
-                          chatGptSeen ? secondaryButtonClass("sm") : primaryButtonClass(false)
-                        }
-                      >
-                        {wm("buttons.copyMcpUrl")}
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => void createConnector(actorId)}
-                        disabled={createBusy || !groupId || !actorId || !webAccessReady}
-                        className={primaryButtonClass(createBusy)}
-                      >
-                        {selectedConnector
-                          ? wm("buttons.rotateMcpUrl")
-                          : wm("buttons.createMcpUrl")}
-                      </button>
-                    )}
-                  </div>
+              <SetupSection
+                title={
+                  <span data-t05-change="chat-binding">
+                    {wm("t05.identity")}
+                    <T05ChangeMark />
+                  </span>
+                }
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span data-t05-change="binding-status">
+                    {sessionBound ? wm("t05.bound") : wm("t05.unbound")}
+                    <T05ChangeMark />
+                  </span>
+                  <button
+                    type="button"
+                    data-t05-change="copy-binding"
+                    disabled={bindingBusy || createBusy}
+                    onClick={() => void copyBinding()}
+                    className={secondaryButtonClass("sm")}
+                  >
+                    {wm("t05.copy")}
+                    <T05ChangeMark />
+                  </button>
+                  {sessionBound && selectedConnector && (
+                    <button
+                      type="button"
+                      data-t05-change="disconnect-chat"
+                      disabled={Boolean(revokeBusyId)}
+                      onClick={() => void revokeConnector(selectedConnector.connector_id)}
+                      className={secondaryButtonClass("sm")}
+                    >
+                      {wm("t05.disconnect")}
+                      <T05ChangeMark />
+                    </button>
+                  )}
                 </div>
+                <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+                  {wm("t05.identityNote")}
+                </p>
               </SetupSection>
+              <details data-t05-change="legacy-setup">
+                <summary className="cursor-pointer text-sm">
+                  {wm("t05.original")}
+                  <T05ChangeMark />
+                </summary>
+                {!webAccessReady ? (
+                  <div className="mt-4 flex flex-col gap-3 border-t border-[var(--glass-border-subtle)] pt-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-[var(--color-text-primary)]">
+                        {wm("summary.webAccess")}
+                      </div>
+                      <div className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
+                        {webAccessPrerequisiteLabel}
+                      </div>
+                    </div>
+                    {onOpenWebAccess ? (
+                      <button
+                        type="button"
+                        onClick={onOpenWebAccess}
+                        className={`${secondaryButtonClass("sm")} shrink-0`}
+                      >
+                        {wm("buttons.openWebAccess")}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                <SetupSection title={wm("chatSetup.mcpAppTitle")}>
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={[
+                            "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
+                            setupPillClass(mcpStatusTone),
+                          ].join(" ")}
+                        >
+                          {mcpStatusLabel}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
+                        {mcpInstructionDetail}
+                      </p>
+                      {!chatGptSeen ? (
+                        <>
+                          <ol className="mt-3 list-decimal space-y-1 pl-4 text-xs leading-5 text-[var(--color-text-tertiary)]">
+                            <li>{wm("mcp.instructionOpenSettings")}</li>
+                            <li>{wm("mcp.instructionCreateApp")}</li>
+                            <li>{wm("mcp.instructionEnableConnector")}</li>
+                          </ol>
+                          <div className="mt-3 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
+                            <span>{wm("mcp.permissionHint")}</span>
+                            <a
+                              href="https://help.openai.com/en/articles/11487775-apps-in-chatgpt"
+                              target="_blank"
+                              rel="noreferrer"
+                              className="ml-2 font-semibold underline-offset-2 hover:underline"
+                            >
+                              {wm("mcp.permissionDocsLink")}
+                            </a>
+                          </div>
+                        </>
+                      ) : null}
+                      {selectedConnector && !selectedMcpUrl ? (
+                        <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                          {wm("warnings.rotateOldConnector")}
+                        </div>
+                      ) : null}
+                      {mcpUrlLocalWarning ? (
+                        <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                          {wm("warnings.localMcpUrl")}
+                        </div>
+                      ) : null}
+                      {mcpUrlHttpsWarning && !mcpUrlLocalWarning ? (
+                        <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                          {wm("warnings.nonHttpsMcpUrl")}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                      {selectedMcpUrl ? (
+                        <button
+                          type="button"
+                          onClick={() => void copyValue(selectedMcpUrl, wm("copyLabels.mcpUrl"))}
+                          className={
+                            chatGptSeen ? secondaryButtonClass("sm") : primaryButtonClass(false)
+                          }
+                        >
+                          {wm("buttons.copyMcpUrl")}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => void createConnector(actorId)}
+                          disabled={createBusy || !groupId || !actorId || !webAccessReady}
+                          className={primaryButtonClass(createBusy)}
+                        >
+                          {selectedConnector
+                            ? wm("buttons.rotateMcpUrl")
+                            : wm("buttons.createMcpUrl")}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </SetupSection>
+              </details>
 
-              <SetupSection title={wm("chatSetup.deliveryTargetTitle")}>
+              <SetupSection
+                title={
+                  <span data-t05-change="group-return-target">
+                    {wm("chatSetup.deliveryTargetTitle")}
+                    <T05ChangeMark />
+                  </span>
+                }
+              >
                 <div className="grid gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
                   <div className="rounded-lg border border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] px-3 py-3">
                     <div className="flex flex-wrap items-center gap-2">
@@ -1229,6 +1379,7 @@ export default function WebModelConnectorsTab({
                       }
                     >
                       {wm("buttons.saveTarget")}
+                      <T05ChangeMark />
                     </button>
                   </div>
 
@@ -1253,7 +1404,10 @@ export default function WebModelConnectorsTab({
                     {targetDraftMode === "existing" ? (
                       <div className="ml-6 space-y-2 border-l border-[var(--glass-border-subtle)] pl-3">
                         <label className="block">
-                          <span className={labelClass(isDark)}>{wm("target.conversationUrl")}</span>
+                          <span className={labelClass(isDark)}>
+                            {wm("target.conversationUrl")}
+                            <T05ChangeMark />
+                          </span>
                           <div className="mt-1 flex flex-col gap-2 sm:flex-row">
                             <input
                               value={conversationUrlDraft}
@@ -1280,6 +1434,7 @@ export default function WebModelConnectorsTab({
                                 className={secondaryButtonClass("sm")}
                               >
                                 {wm("buttons.useCurrentTab")}
+                                <T05ChangeMark />
                               </button>
                             ) : null}
                           </div>

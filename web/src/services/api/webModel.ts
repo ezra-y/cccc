@@ -24,6 +24,8 @@ export type WebModelConnector = {
   connector_url_with_token?: string;
   connector_url_path_token?: string;
   secret_available?: boolean;
+  session_bound?: boolean;
+  session_bound_at?: string;
 };
 
 export type WebModelConnectorCreateResult = {
@@ -58,6 +60,8 @@ export type NomcpSession = {
   session_url?: string;
   session_url_with_token?: string;
   secret_available?: boolean;
+  session_bound?: boolean;
+  session_bound_at?: string;
 };
 
 export type NomcpSessionCreateResult = { session: NomcpSession; secret: string };
@@ -220,6 +224,20 @@ export async function revokeWebModelConnector(connectorId: string) {
   return apiJson<{ revoked: boolean; connector_id: string }>(
     `/api/v1/web-model/connectors/${encodeURIComponent(String(connectorId || "").trim())}`,
     { method: "DELETE" },
+  );
+}
+
+export type WebModelConnectorBinding = {
+  code: string;
+  binding_expires_at: string;
+  group_id: string;
+  actor_id: string;
+  session_bound: boolean;
+};
+export async function createWebModelConnectorBinding(connectorId: string) {
+  return apiJson<WebModelConnectorBinding>(
+    `/api/v1/web-model/connectors/${encodeURIComponent(connectorId.trim())}/binding`,
+    { method: "POST", body: JSON.stringify({}) },
   );
 }
 
