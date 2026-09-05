@@ -249,16 +249,6 @@ export function AppModals({
   );
   const openSettingsTarget = useModalStore((state) => state.openSettingsTarget);
   const contextTaskId = useModalStore((state) => state.contextTaskId);
-  // Reuse the normal editors; only remember their return destination, never a second actor model.
-  const webModelsReturnRef = useRef(false);
-  const webModelsActionRef = useRef(false);
-  const [webModelsRefreshNonce, setWebModelsRefreshNonce] = useState(0);
-  const returnToWebModels = useCallback(() => {
-    if (!webModelsReturnRef.current) return;
-    webModelsReturnRef.current = false;
-    setWebModelsRefreshNonce((value) => value + 1);
-    openSettingsTarget({ scope: "global", tab: "webModels" });
-  }, [openSettingsTarget]);
 
   const { inboxActorId, inboxMessages, setInboxMessages } = useInboxStore(
     useShallow((s) => ({
@@ -1071,7 +1061,6 @@ export function AppModals({
 
       await refreshActors();
       setEditingActor(null);
-      returnToWebModels();
 
       if (!options.restart) {
         const isRunning = Boolean(editingActor.running ?? editingActor.enabled ?? false);
@@ -1245,123 +1234,9 @@ export function AppModals({
       closeModal("createGroup");
       await refreshGroups();
       setSelectedGroupId(groupId);
-      if (webModelsReturnRef.current) await loadGroup(groupId);
-      returnToWebModels();
     } finally {
       setBusy("");
     }
-  };
-
-  const openCreateGroupFromWebModels = async () => {
-    if (!canManageGroups || readOnly || webModelsActionRef.current) return;
-    webModelsReturnRef.current = true;
-    closeModal("settings");
-    resetCreateGroupForm();
-    directoryBrowser.setError("");
-    openModal("createGroup");
-    try {
-      const response = await api.fetchDirSuggestions();
-      if (!useModalStore.getState().modals.createGroup) return;
-      if (response.ok) useFormStore.getState().setDirSuggestions(response.result.suggestions || []);
-      else
-        directoryBrowser.setError(
-          response.error?.message || t("createGroup.failedToListDirectory", { ns: "modals" }),
-        );
-    } catch {
-      if (useModalStore.getState().modals.createGroup)
-        directoryBrowser.setError(t("createGroup.failedToListDirectory", { ns: "modals" }));
-    }
-  };
-
-  const openActorFromWebModels = async (
-    groupId: string,
-    target:
-      | { role: "foreman" | "peer"; runtime?: "web_model" }
-      | { actorId: string; kind: "web_model" | "local" },
-  ) => {
-    const gid = groupId.trim();
-    if (!gid || !canManageGroups || readOnly || webModelsActionRef.current) return;
-    webModelsActionRef.current = true;
-    try {
-      const response = await api.fetchActors(gid, false, { noCache: true });
-      if (!response.ok) {
-        showError(response.error.message);
-        return;
-      }
-      if (!useModalStore.getState().modals.settings) return;
-      const actor =
-        "actorId" in target
-          ? response.result.actors.find((item) => item.id === target.actorId)
-          : null;
-      if ("actorId" in target && !actor) {
-        showError(t("webModels.chatgpt.errors.memberUnavailable", { ns: "settings" }));
-        return;
-      }
-      setSelectedGroupId(gid);
-      const [, runtimeResponse] = await Promise.all([loadGroup(gid), api.fetchRuntimes()]);
-      if (
-        useGroupStore.getState().selectedGroupId !== gid ||
-        !useModalStore.getState().modals.settings
-      )
-        return;
-      if (!runtimeResponse.ok) {
-        showError(runtimeResponse.error.message);
-        return;
-      }
-      useGroupStore.getState().setRuntimes(runtimeResponse.result.runtimes);
-      webModelsReturnRef.current = true;
-      closeModal("settings");
-      if ("actorId" in target && actor) {
-        applyEditingActor(actor as unknown as Record<string, unknown>);
-        if (target.kind === "web_model" && actor.runtime !== "web_model") {
-          setEditActorRuntime("web_model");
-          setEditActorCommand("");
-        } else if (target.kind === "local" && actor.runtime === "web_model") {
-          const installed = runtimeResponse.result.runtimes;
-          const local =
-            installed.find((item) => item.name === "opencode" && item.available) ||
-            installed.find((item) => item.name !== "web_model" && item.available);
-          setEditActorRuntime((local?.name || "custom") as SupportedRuntime);
-          setEditActorCommand(String(local?.recommended_command || ""));
-        }
-      } else if ("role" in target) {
-        resetAddActorForm();
-        setNewActorRole(target.role);
-        if (target.runtime) setNewActorRuntime(target.runtime);
-        openModal("addActor");
-      }
-    } catch (error) {
-      showError(String(error));
-      returnToWebModels();
-    } finally {
-      webModelsActionRef.current = false;
-    }
-  };
-
-  const openGuidanceFromWebModels = async (groupId: string) => {
-    const gid = groupId.trim();
-    if (!gid || !canManageGroups || readOnly || webModelsActionRef.current) return;
-    webModelsActionRef.current = true;
-    try {
-      setSelectedGroupId(gid);
-      await loadGroup(gid);
-      if (
-        useGroupStore.getState().selectedGroupId === gid &&
-        useModalStore.getState().modals.settings
-      )
-        openSettingsTarget({ scope: "group", tab: "guidance" });
-    } catch (error) {
-      showError(String(error));
-    } finally {
-      webModelsActionRef.current = false;
-    }
-  };
-
-  const cancelCreateGroup = () => {
-    closeModal("createGroup");
-    resetCreateGroupForm();
-    directoryBrowser.setError("");
-    returnToWebModels();
   };
 
   const handleAddActor = async (avatarFile?: File | null): Promise<boolean> => {
@@ -1457,7 +1332,6 @@ export function AppModals({
       closeModal("addActor");
       resetAddActorForm();
       await refreshActors();
-      returnToWebModels();
       if (postCreateErrors.length > 0) {
         showError(
           t("actorCreatedSetupFailed", {
@@ -1591,8 +1465,7 @@ export function AppModals({
   const handleCloseAddActor = useCallback(() => {
     closeModal("addActor");
     resetAddActorForm();
-    returnToWebModels();
-  }, [closeModal, resetAddActorForm, returnToWebModels]);
+  }, [closeModal, resetAddActorForm]);
 
   const handleCancelEditActor = useCallback(() => {
     editActorNotesSeqRef.current += 1;
@@ -1600,8 +1473,7 @@ export function AppModals({
     setEditActorNotesBusy(false);
     setEditActorNotes("");
     setEditingActor(null);
-    returnToWebModels();
-  }, [setEditActorNotes, setEditingActor, returnToWebModels]);
+  }, [setEditActorNotes, setEditingActor]);
 
   const relaySourceGroupId = useMemo(() => {
     const fromStore = relaySource?.groupId ? String(relaySource.groupId) : "";
@@ -2107,25 +1979,6 @@ export function AppModals({
             isDark={isDark}
             groupId={selectedGroupId}
             groupDoc={groupDoc}
-            onCreateGroup={
-              canManageGroups && !readOnly ? () => void openCreateGroupFromWebModels() : undefined
-            }
-            onCreateActor={
-              canManageGroups && !readOnly
-                ? (gid, preset) => void openActorFromWebModels(gid, preset)
-                : undefined
-            }
-            onEditActor={
-              canManageGroups && !readOnly
-                ? (gid, actorId, kind) => void openActorFromWebModels(gid, { actorId, kind })
-                : undefined
-            }
-            onOpenWebModelGuidance={
-              canManageGroups && !readOnly
-                ? (gid) => void openGuidanceFromWebModels(gid)
-                : undefined
-            }
-            webModelsRefreshNonce={webModelsRefreshNonce}
           />
         </Suspense>
       ) : null}
@@ -2238,8 +2091,12 @@ export function AppModals({
         onFetchDirContents={directoryBrowser.fetchContents}
         onCreateDirectory={directoryBrowser.createDirectory}
         onCreateGroup={handleCreateGroup}
-        onClose={cancelCreateGroup}
-        onCancelAndReset={cancelCreateGroup}
+        onClose={() => closeModal("createGroup")}
+        onCancelAndReset={() => {
+          closeModal("createGroup");
+          resetCreateGroupForm();
+          directoryBrowser.setError("");
+        }}
       />
 
       <ActorConfigModal

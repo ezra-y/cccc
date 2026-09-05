@@ -30,9 +30,7 @@
     "globalScopeTitle": "グローバル範囲",
     "globalScopeContent": "CCCC インスタンス全体 (daemon + Web) に適用されます。これらの設定は、オーバーライドしない限り、すべてのグループに影響します。",
     "globalLockedTitle": "管理者権限が必要です",
-    "globalLockedContent": "グローバル設定は管理者専用です。グループ設定を変更したい場合は対象グループから Settings を開き、グローバル設定を管理したい場合は管理者アクセストークンでサインインしてください。",
-    "workspaceSettings": "ワークスペース設定",
-    "sections": "設定項目"
+    "globalLockedContent": "グローバル設定は管理者専用です。グループ設定を変更したい場合は対象グループから Settings を開き、グローバル設定を管理したい場合は管理者アクセストークンでサインインしてください。"
   },
   "account": {
     "title": "CCCC アカウント",
@@ -1200,17 +1198,7 @@
         "notOpen": "未オープン",
         "signedIn": "サインイン済み",
         "open": "ブラウザは開いています",
-        "openSignInNeeded": "開いています。サインインが必要です",
-        "title": "共有 ChatGPT ブラウザー",
-        "description": "各グループは専用ブラウザーのログインを共有します。返信は各グループに保存した会話へ送信します。",
-        "hideNote": "自動送信にはプレビュー表示や最前面のウィンドウは不要です。",
-        "currentChat": "ブラウザーの現在の会話",
-        "currentChatNone": "会話の URL は未取得です",
-        "noActor": "Web Foreman のいるグループを選んで確認してください",
-        "stateLabel": "ブラウザーの状態",
-        "viewNote": "プレビューと送信は別操作です",
-        "viewOnlyNote": "表示・非表示でブラウザーは起動・停止しません。非表示でも送信は続きます。",
-        "previewClosed": "ブラウザーは未起動です。必要なときに「ログインを開く」を使ってください。プレビューだけでは起動しません。"
+        "openSignInNeeded": "開いています。サインインが必要です"
       },
       "mcp": {
         "urlNotCreated": "MCP URL は未作成です",
@@ -1235,16 +1223,6 @@
         "mcpAppTitle": "2. CCCC MCP app を接続",
         "deliveryTargetTitle": "3. 配信先を選択"
       },
-      "binding": {
-        "title": "会話接続",
-        "statusBound": "バインド済み",
-        "statusUnbound": "未バインド",
-        "boundDetail": "このグループには ChatGPT の会話が紐付いています。ブラウザーへの返信には、送信先の保存とログインが必要です。",
-        "unboundDetail": "ChatGPT の会話がまだ紐付いていません。Foreman にする会話に接続手順を貼り付けてください。",
-        "hint": "会話の識別と返信先の保存は別の手順です。ここでは会話の紐付けのみを確認します。",
-        "template": "グループ「{{group}}」の Foreman {{actor}} にこの会話を紐付け、順に呼び出してください：\ncccc_session_bind(code={{code}})\ncccc_bootstrap()\n実際のグループとブラウザー返信先の状態を報告してください。コードは10分間有効で、一度だけ使えます。",
-        "legacySetup": "従来の接続設定と権限の説明"
-      },
       "next": {
         "prefix": "次: {{action}}",
         "setPublicHttps": "Web Access で公開 HTTPS URL を設定します。",
@@ -1259,9 +1237,7 @@
         "bindTarget": "既存の ChatGPT 会話を保存するか、対象 URL を貼り付けるか、次回配信で新しい会話を選びます。",
         "ready": "ブラウザ配信の準備ができています。"
       },
-      "queue": {
-        "queued": "{{count}} 件キュー済み"
-      },
+      "queue": { "queued": "{{count}} 件キュー済み" },
       "warnings": {
         "rotateOldConnector": "この古い connector を一度ローテーションして、コピー可能な ChatGPT MCP URL を生成してください。",
         "localMcpUrl": "MCP URL はローカル専用です。Web ホスト型モデルには公開 HTTPS URL が必要です。",
@@ -1294,14 +1270,7 @@
         "recorded": "記録済み",
         "lastError": "最近のエラー",
         "pendingNewChat": "新規会話バインド待ち",
-        "mode": "モード",
-        "callbackNote": "報告は既存の自動送信を利用します。協働の一時停止にはグループの停止操作を使ってください。",
-        "closeBrowserWarning": "ブラウザーを閉じると共有中の全グループに影響します。画面だけ閉じる場合は「画面を隠す」を使ってください。",
-        "currentTarget": "保存した送信先",
-        "lastMcpError": "直近のツールエラー",
-        "mcpUrlId": "接続先 ID",
-        "profileDir": "ブラウザーのプロファイル保存先",
-        "remote": "直近のツール呼び出し"
+        "mode": "モード"
       },
       "browserSurface": {
         "starting": "ChatGPT を開いています...",
@@ -1315,7 +1284,7 @@
       },
       "buttons": {
         "refresh": "更新",
-        "openWebAccess": "公開アクセス設定",
+        "openWebAccess": "Web Access を開く",
         "rotateMcpUrl": "MCP URL をローテーション",
         "revokeMcpUrl": "MCP URL を取り消す",
         "copyMcpUrl": "MCP URL をコピー",
@@ -1325,22 +1294,7 @@
         "useCurrentTab": "現在の tab を使う",
         "reloadChatGpt": "ChatGPT ページをリロード",
         "checkStatus": "状態を確認",
-        "closeBrowser": "ブラウザを閉じる",
-        "copyBindingInstructions": "接続手順をコピー",
-        "addForeman": "Foreman を追加",
-        "addMember": "メンバーを追加",
-        "changeForeman": "Foreman を変更",
-        "cancelTargetEdit": "変更を取り消す",
-        "copyInstructions": "接続手順をコピー",
-        "guidance": "Foreman の作業指針",
-        "hideSurface": "画面を隠す",
-        "viewSurface": "画面を見る",
-        "localModelOption": "ローカルモデル",
-        "webModelOption": "Web モデル",
-        "newGroup": "グループを作成",
-        "openLogin": "ログインを開く",
-        "readCurrentChat": "現在の会話を読み取る",
-        "disconnectChat": "会話の接続を解除"
+        "closeBrowser": "ブラウザを閉じる"
       },
       "activity": {
         "notSeenYet": "まだ未確認",
@@ -1350,9 +1304,7 @@
         "seen": "確認済み",
         "seenAt": "{{time}} に確認"
       },
-      "copyLabels": {
-        "mcpUrl": "MCP URL"
-      },
+      "copyLabels": { "mcpUrl": "MCP URL" },
       "notices": {
         "connectorRotated": "Connector をローテーションしました。以前の connector は取り消されました。",
         "connectorCreated": "Connector を作成しました。",
@@ -1361,34 +1313,24 @@
         "browserClosed": "ChatGPT ブラウザセッションを閉じました。",
         "newChatSelected": "次回配信で新しい ChatGPT 会話を使います。",
         "conversationBound": "ChatGPT 会話をこの actor にバインドしました。",
-        "bindingCopied": "接続手順をコピーしました。",
         "targetSavedExisting": "保存しました。次回配信はこの ChatGPT 会話を使います。",
         "targetSavedNewChat": "保存しました。次回配信で新しい ChatGPT 会話を開始します。",
         "copied": "{{label}} をコピーしました。",
-        "copyFailed": "コピーに失敗しました。",
-        "browserChecked": "ブラウザーの状態を確認しました",
-        "currentChatRead": "URL を読み取りました。確認して保存してください",
-        "signInOpened": "専用ブラウザーを開きました",
-        "targetEditCancelled": "変更を取り消しました",
-        "chatDisconnected": "選択したグループの会話の接続を解除しました。"
+        "copyFailed": "コピーに失敗しました。"
       },
       "errors": {
         "loadConnectorFailed": "ChatGPT Web Model MCP URL の読み込みに失敗しました。",
         "loadBrowserSessionFailed": "ChatGPT ブラウザセッションの読み込みに失敗しました。",
         "openBrowserFailed": "ChatGPT ブラウザを開けませんでした。",
-        "loadActorsFailed": "メンバーを読み込めませんでした。",
+        "loadActorsFailed": "actors の読み込みに失敗しました。",
         "loadGroupsFailed": "グループの読み込みに失敗しました。",
         "loadSettingsFailed": "ChatGPT Web Model 設定の読み込みに失敗しました。",
-        "selectActorFirst": "先に Web Foreman のいるグループを選んでください。",
-        "createConnectorFailed": "接続先を作成できませんでした。",
-        "revokeConnectorFailed": "接続を取り消せませんでした。",
+        "selectActorFirst": "まず ChatGPT Web Model actor を含むグループを選択してください。",
+        "createConnectorFailed": "connector の作成に失敗しました。",
+        "revokeConnectorFailed": "connector の取り消しに失敗しました。",
         "restartBrowserFailed": "ChatGPT ブラウザの再起動に失敗しました。",
         "closeBrowserFailed": "ChatGPT ブラウザセッションの終了に失敗しました。",
-        "bindConversationFailed": "ChatGPT 会話のバインドに失敗しました。",
-        "bindingRequestFailed": "使い捨て接続コードの発行に失敗しました。",
-        "loadBrowserFailed": "ブラウザー状態を読み取れませんでした。",
-        "loadConnectorsFailed": "接続一覧を読み取れませんでした。",
-        "memberUnavailable": "選択したメンバーは存在しません。グループを更新してください。"
+        "bindConversationFailed": "ChatGPT 会話のバインドに失敗しました。"
       },
       "nextAction": {
         "open_chatgpt": "ChatGPT を開く",
@@ -1398,143 +1340,9 @@
         "bind_current_chat": "現在の会話をバインド",
         "retry_delivery": "配信を再試行",
         "inspect_error": "エラーを確認",
-        "login_chatgpt": "ChatGPT にサインイン",
-        "resolve_draft": "入力中の下書きを確認",
-        "wait_for_reply": "現在の回答の終了を待つ",
-        "inspect_browser": "ブラウザーの状態を確認",
-        "bind_chat": "返信先の会話を設定"
+        "login_chatgpt": "ChatGPT にサインイン"
       },
-      "nextActionReason": {
-        "resolve_draft": "レポートは保持されています。下書きを処理すると配信が再開します。",
-        "wait_for_reply": "現在の回答は中断しません。終了後に配信を再開します。",
-        "inspect_browser": "ページの準備状態が未確認です。入力欄が使えないだけでは、ログアウトとは判断しません。",
-        "login_chatgpt": "このブラウザーでログインすると、保持されたレポートの配信を再開できます。",
-        "bind_chat": "返信先の会話 URL を保存してください。識別情報の紐付けは変更されません。",
-        "open_chatgpt": "ログインやページ確認には専用ブラウザーを開いてください。",
-        "wait_for_chat_bind": "報告は送信済みです。再送せず、新しい会話 URL を待ってください。",
-        "inspect_error": "送信結果が未確認です。再試行前に元の会話を確認してください。",
-        "retry_delivery": "報告は保持されています。ブラウザーを確認してから送信を再開してください。"
-      },
-      "common": {
-        "none": "なし",
-        "notSet": "未設定",
-        "loading": "読み込み中…"
-      },
-      "reference": {
-        "mcpCopyHint": "この actor-bound MCP URL を ChatGPT にコピーします。CCCC が app を確認済みにするのは、ChatGPT が CCCC tool を呼び出した後です。",
-        "mcpCreateHint": "この actor-bound MCP URL を作成し、ChatGPT のカスタム app にコピーします。",
-        "mcpLastCallFailed": "最近の呼び出しに失敗",
-        "mcpNeedsRotation": "ローテーションが必要",
-        "mcpNotCreated": "MCP URL は未作成です",
-        "mcpRotateHint": "この古い connector にはコピー可能な URL がありません。一度ローテーションして新しい actor-bound MCP URL を作成してください。",
-        "mcpWaitingFirstCall": "最初の CCCC tool call を待機中",
-        "instructionCreateApp": "名前を CCCC にし、コピーした MCP URL を貼り付け、Authentication を No Auth にします。",
-        "instructionEnableConnector": "GPT-5.x の会話で CCCC connector を有効化します。最初の CCCC tool call で ChatGPT が Always allow を提示した場合は選択してください。",
-        "instructionOpenSettings": "ChatGPT で Settings > Apps > Advanced settings > Create app を開きます。",
-        "permissionDocsLink": "OpenAI app 権限",
-        "permissionHint": "ChatGPT が初めて CCCC app を呼び出すときは、ChatGPT 側の app 権限カードを承認してください。Always allow が表示される場合は選択できます。管理対象ワークスペースでは、この選択肢が非表示または管理者制御になることがあります。",
-        "title": "従来の設定と権限の説明",
-        "description": "従来の直接接続設定を参照用に残しています。既存の OpenAI Tunnel 接続では、グループごとのアプリ作成は不要です。",
-        "summaryTitle": "従来の接続状態",
-        "chatgpt": "専用ブラウザー",
-        "chatgptClosed": "未起動",
-        "chatgptSignInNeeded": "ログインを確認",
-        "chatgptSignedIn": "入力欄の準備完了",
-        "mcpApp": "ツール接続",
-        "mcpBound": "このグループに会話を紐付け済み",
-        "mcpTitle": "従来の直接接続 URL",
-        "mcpSeenAt": "最終呼び出し：{{time}}",
-        "member": "Web Foreman",
-        "memberDuplicate": "Web メンバーが {{count}} 人",
-        "memberMissing": "Web Foreman なし",
-        "memberRunning": "実行中",
-        "memberStopped": "停止中",
-        "optionalNote": "以下の URL と公開設定は、従来の直接接続だけに適用されます。",
-        "returnNewChat": "次回送信で新規会話",
-        "returnNone": "返信先 URL 未保存",
-        "returnSaved": "返信先 URL 保存済み",
-        "returnTarget": "返信先",
-        "warningLocalUrl": "ローカル URL はクラウドから直接アクセスできません。既存のトンネル接続には当てはまりません。",
-        "warningNonHttps": "従来のクラウド直接接続には HTTPS URL が必要です。",
-        "warningRotate": "更新すると以前の接続が失効します。確認して操作してください。",
-        "webAccess": "公開直接接続",
-        "webAccessNeedsSetup": "直接接続は未設定",
-        "webAccessReady": "直接接続 URL 設定済み",
-        "webAccessNote": "従来のクラウド直接接続用です。既存のトンネル紐付けには不要です。"
-      },
-      "title": "ChatGPT 接続",
-      "description": "共有ブラウザーを設定し、各グループの Foreman と返信先の会話を選びます。",
-      "editor": {
-        "title": "返信先の会話",
-        "description": "保存前に URL を確認してください。返信先の保存と会話の識別情報の紐付けは別です。",
-        "choiceCurrent": "ブラウザーの現在の会話を使う",
-        "choiceCurrentDetail": "現在の会話を明示的に読み取り、確認してから保存します。",
-        "choicePasted": "既存の会話 URL を貼り付ける",
-        "choicePastedDetail": "/c/ を含む完全な ChatGPT 会話 URL を使用してください。",
-        "choiceNew": "次回の送信時に会話を作成",
-        "choiceNewDetail": "ここでは選択だけを保存します。次の報告で会話を作成し、接続機能の有効化と識別情報の紐付けが別途必要です。",
-        "currentChatAvailable": "現在の URL：{{target}}",
-        "currentChatUnavailable": "現在のページに利用可能な ChatGPT 会話 URL がありません。",
-        "noUnsaved": "未保存の変更はありません",
-        "unsaved": "URL の変更は未保存です",
-        "urlInvalid": "完全な https://chatgpt.com/c/... の会話 URL を入力してください。",
-        "urlLabel": "会話の URL"
-      },
-      "groupDetail": {
-        "changeForemanHint": "ローカル Foreman も同じ「Foreman を変更」から設定できます。",
-        "chatToGroupTitle": "会話 → グループ",
-        "groupToChatTitle": "グループ → 会話",
-        "foremanRole": "Foreman",
-        "identityBound": "識別情報は紐付け済み",
-        "identityNotBound": "識別情報は未設定",
-        "identityNote": "この会話がグループを利用できる状態です。報告の返信成功を意味しません。",
-        "lastDelivery": "直近の送信",
-        "lastDeliveryNone": "送信履歴なし",
-        "localForemanNote": "このグループはローカルモデルが担当しており、ChatGPT の紐付けは不要です。",
-        "memberLabel": "Web メンバー",
-        "members": "他のメンバー",
-        "membersUnit": "{{count}} 人",
-        "multipleWarning": "Web メンバーが {{count}} 人います。Foreman の設定を確認してください。",
-        "noForeman": "Foreman 未設定",
-        "queue": "待機中の報告",
-        "returnSaved": "返信先 URL を保存済み",
-        "returnNotSaved": "返信先 URL は未保存",
-        "returnNewChat": "次回送信時に新規作成",
-        "returnNote": "返信にはブラウザーのログインと接続機能が必要です。実際のツール応答で確認してください。",
-        "running": "実行中",
-        "stopped": "停止中",
-        "runtime": "モデルの種類",
-        "runtimeLocal": "ローカルモデル",
-        "runtimeWeb": "Web モデル",
-        "runtimeNone": "未設定",
-        "savedAt": "保存日時：{{time}}"
-      },
-      "groups": {
-        "title": "グループ一覧",
-        "description": "グループを選んで Foreman と接続を管理します。選択の切り替えで会話の紐付けは変わりません。",
-        "empty": "グループはまだありません",
-        "identityBound": "会話を紐付け済み",
-        "notConnected": "会話の紐付けなし",
-        "urlReady": "接続先を作成済み"
-      },
-      "browserMode": {
-        "visible": "ウィンドウあり",
-        "background": "バックグラウンドウィンドウ",
-        "headless": "ウィンドウなし"
-      },
-      "deliveryMode": {
-        "standard": "標準送信",
-        "image_compat": "画像互換送信"
-      },
-      "deliveryState": {
-        "submitted": "ページに送信済み",
-        "submitting": "送信中",
-        "failed": "送信失敗",
-        "deferred": "ページを待機中",
-        "submission_ambiguous": "送信結果未確認",
-        "completion_ambiguous": "送信確認を待機中",
-        "pending_new_chat_bind": "新規会話 URL を待機中"
-      }
+      "common": { "none": "なし", "notSet": "未設定" }
     }
   },
   "webAccess": {

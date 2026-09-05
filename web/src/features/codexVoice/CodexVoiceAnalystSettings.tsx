@@ -74,6 +74,7 @@ export function CodexVoiceAnalystSettings({
                       { value: "claude", label: RUNTIME_INFO.claude.label },
                       { value: "grok", label: RUNTIME_INFO.grok.label },
                       { value: "opencode", label: RUNTIME_INFO.opencode.label },
+                      { value: "kilo", label: RUNTIME_INFO.kilo.label },
                     ]}
                   />
                   <p className="mt-1.5 text-[10px] leading-4 text-[var(--color-text-muted)]">
@@ -124,7 +125,7 @@ export function CodexVoiceAnalystSettings({
         ) : null}
       </div>
 
-      <div className="sticky bottom-0 mt-auto flex flex-col gap-3 border-t border-[var(--glass-border-subtle)] bg-[var(--color-sidebar-bg)] px-5 py-4 backdrop-blur-xl safe-area-inset-bottom sm:flex-row sm:items-center sm:justify-between sm:px-6">
+      <div className="sticky bottom-0 mt-auto flex flex-col gap-3 border-t border-[var(--glass-border-subtle)] bg-[var(--color-sidebar-bg)] px-5 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))] backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div className="min-w-0 text-xs">
           {form.error ? (
             <p className="text-rose-500" role="alert">

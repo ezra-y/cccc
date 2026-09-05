@@ -1,10 +1,11 @@
-import { useLayoutEffect, useState } from "react";
+import { useLayoutEffect, useRef } from "react";
 
 /** Reveal the active mobile section without scrolling the settings form or page. */
 export function useActiveSettingsTab(scope: string, activeTab: string) {
-  const [tab, setTab] = useState<HTMLButtonElement | null>(null);
+  const activeRef = useRef<HTMLButtonElement>(null);
 
   useLayoutEffect(() => {
+    const tab = activeRef.current;
     const strip = tab?.parentElement;
     if (!tab || !strip) return;
     const reveal = () => {
@@ -19,8 +20,7 @@ export function useActiveSettingsTab(scope: string, activeTab: string) {
     observer.observe(strip);
     observer.observe(tab);
     return () => observer.disconnect();
-  }, [scope, activeTab, tab]);
+  }, [scope, activeTab]);
 
-  // Global sections can appear after permissions load; react to DOM attachment too.
-  return setTab;
+  return activeRef;
 }

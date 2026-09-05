@@ -18,7 +18,7 @@
     "account": "账户",
     "developer": "开发者",
     "webAccess": "Web 访问",
-    "webModels": "网页模型",
+    "webModels": "Web 模型",
     "connections": "工作组桥接"
   },
   "navigation": {
@@ -30,9 +30,7 @@
     "globalScopeTitle": "全局范围",
     "globalScopeContent": "应用于整个 CCCC 实例（守护进程 + Web）。这些设置影响所有工作组，除非被覆盖。",
     "globalLockedTitle": "需要管理员权限",
-    "globalLockedContent": "全局设置仅限管理员使用。若要调整工作组内设置，请从某个工作组打开设置；若要管理全局设置，请使用管理员访问令牌登录。",
-    "workspaceSettings": "工作区设置",
-    "sections": "设置类别"
+    "globalLockedContent": "全局设置仅限管理员使用。若要调整工作组内设置，请从某个工作组打开设置；若要管理全局设置，请使用管理员访问令牌登录。"
   },
   "account": {
     "title": "CCCC 账户",
@@ -1195,17 +1193,7 @@
         "notOpen": "未打开",
         "signedIn": "已登录",
         "open": "浏览器已打开",
-        "openSignInNeeded": "已打开，需要登录",
-        "title": "共享 ChatGPT 浏览器",
-        "description": "各工作组共用专用浏览器的登录资料；消息仍按各组保存的聊天地址投递。",
-        "hideNote": "自动投递不需要展开画面，也不需要把窗口放在前台。",
-        "currentChat": "浏览器当前聊天",
-        "currentChatNone": "尚未读取到聊天地址",
-        "noActor": "选择有网页组长的工作组后可检查",
-        "stateLabel": "浏览器状态",
-        "viewNote": "画面与投递分开",
-        "viewOnlyNote": "查看或隐藏画面不会启停浏览器；隐藏后继续投递。",
-        "previewClosed": "浏览器尚未打开。需要登录时点击“打开登录”；查看画面不会自动启动浏览器。"
+        "openSignInNeeded": "已打开，需要登录"
       },
       "mcp": {
         "urlNotCreated": "尚未创建 MCP URL",
@@ -1230,16 +1218,6 @@
         "mcpAppTitle": "2. 连接 CCCC MCP app",
         "deliveryTargetTitle": "3. 选择投递目标"
       },
-      "binding": {
-        "title": "会话连接",
-        "statusBound": "已绑定",
-        "statusUnbound": "未绑定",
-        "boundDetail": "此工作组已绑定一个 ChatGPT 聊天。回传消息还需要保存目标聊天，并确认浏览器已登录。",
-        "unboundDetail": "此工作组还没有绑定 ChatGPT 聊天。复制下面的连接说明，发送到你要用作组长的聊天中。",
-        "hint": "绑定聊天身份与保存回传地址是两个步骤；这里只确认聊天身份。",
-        "template": "请将当前聊天绑定到工作组「{{group}}」的组长 {{actor}}，按顺序调用：\ncccc_session_bind(code={{code}})\ncccc_bootstrap()\n绑定后请报告真实工作组和回传地址状态。绑定码十分钟内有效，只能使用一次。",
-        "legacySetup": "原版连接方式与权限说明"
-      },
       "next": {
         "prefix": "下一步：{{action}}",
         "setPublicHttps": "在 Web Access 中设置公网 HTTPS URL。",
@@ -1254,9 +1232,7 @@
         "bindTarget": "保存已有 ChatGPT 会话、粘贴目标 URL，或选择下次投递时新建会话。",
         "ready": "已可进行浏览器投递。"
       },
-      "queue": {
-        "queued": "{{count}} 条排队"
-      },
+      "queue": { "queued": "{{count}} 条排队" },
       "warnings": {
         "rotateOldConnector": "请轮换一次这个旧 connector，以生成可复制的 ChatGPT MCP URL。",
         "localMcpUrl": "MCP URL 仍是本地地址。网页端模型需要公网 HTTPS URL。",
@@ -1289,14 +1265,7 @@
         "recorded": "已记录",
         "lastError": "最近错误",
         "pendingNewChat": "待绑定新会话",
-        "mode": "模式",
-        "callbackNote": "成员报告沿用现有自动投递。暂停协作请使用工作组的停止或暂停操作。",
-        "closeBrowserWarning": "关闭浏览器会影响所有共用它的工作组；只收起画面请用“隐藏画面”。",
-        "currentTarget": "已保存目标",
-        "lastMcpError": "最近工具错误",
-        "mcpUrlId": "连接入口编号",
-        "profileDir": "浏览器资料目录",
-        "remote": "最近工具调用"
+        "mode": "模式"
       },
       "browserSurface": {
         "starting": "正在打开 ChatGPT...",
@@ -1310,7 +1279,7 @@
       },
       "buttons": {
         "refresh": "刷新",
-        "openWebAccess": "公开访问设置",
+        "openWebAccess": "打开 Web Access",
         "rotateMcpUrl": "轮换 MCP URL",
         "revokeMcpUrl": "撤销 MCP URL",
         "copyMcpUrl": "复制 MCP URL",
@@ -1320,22 +1289,7 @@
         "useCurrentTab": "使用当前 tab",
         "reloadChatGpt": "重新加载 ChatGPT 页面",
         "checkStatus": "检查状态",
-        "closeBrowser": "关闭浏览器",
-        "copyBindingInstructions": "复制连接说明",
-        "addForeman": "添加组长",
-        "addMember": "添加成员",
-        "changeForeman": "更换组长",
-        "cancelTargetEdit": "取消修改",
-        "copyInstructions": "复制连接说明",
-        "guidance": "组长工作指引",
-        "hideSurface": "隐藏画面",
-        "viewSurface": "查看画面",
-        "localModelOption": "本地模型",
-        "webModelOption": "网页模型",
-        "newGroup": "新建工作组",
-        "openLogin": "打开登录",
-        "readCurrentChat": "读取当前聊天",
-        "disconnectChat": "断开聊天"
+        "closeBrowser": "关闭浏览器"
       },
       "activity": {
         "notSeenYet": "尚未访问",
@@ -1345,9 +1299,7 @@
         "seen": "已访问",
         "seenAt": "访问于 {{time}}"
       },
-      "copyLabels": {
-        "mcpUrl": "MCP URL"
-      },
+      "copyLabels": { "mcpUrl": "MCP URL" },
       "notices": {
         "connectorRotated": "Connector 已轮换，旧 connector 已撤销。",
         "connectorCreated": "Connector 已创建。",
@@ -1356,34 +1308,24 @@
         "browserClosed": "ChatGPT 浏览器会话已关闭。",
         "newChatSelected": "下一次投递将新建 ChatGPT 会话。",
         "conversationBound": "ChatGPT 会话已绑定到这个 actor。",
-        "bindingCopied": "连接说明已复制。",
         "targetSavedExisting": "已保存。下一次投递会使用这个 ChatGPT 会话。",
         "targetSavedNewChat": "已保存。下一次投递会新建 ChatGPT 会话。",
         "copied": "{{label}} 已复制。",
-        "copyFailed": "复制失败。",
-        "browserChecked": "已检查浏览器状态",
-        "currentChatRead": "已读取地址，确认后再保存",
-        "signInOpened": "已打开专用浏览器",
-        "targetEditCancelled": "已取消本次修改",
-        "chatDisconnected": "已断开所选工作组的聊天连接。"
+        "copyFailed": "复制失败。"
       },
       "errors": {
         "loadConnectorFailed": "加载 ChatGPT Web Model MCP URL 失败。",
         "loadBrowserSessionFailed": "加载 ChatGPT 浏览器会话失败。",
         "openBrowserFailed": "打开 ChatGPT 浏览器失败。",
-        "loadActorsFailed": "读取成员失败。",
+        "loadActorsFailed": "加载 actors 失败。",
         "loadGroupsFailed": "加载工作组失败。",
         "loadSettingsFailed": "加载 ChatGPT Web Model 设置失败。",
-        "selectActorFirst": "请先选择有网页组长的工作组。",
-        "createConnectorFailed": "创建连接入口失败。",
-        "revokeConnectorFailed": "撤销连接失败。",
+        "selectActorFirst": "请先选择包含 ChatGPT Web Model actor 的工作组。",
+        "createConnectorFailed": "创建 connector 失败。",
+        "revokeConnectorFailed": "撤销 connector 失败。",
         "restartBrowserFailed": "重启 ChatGPT 浏览器失败。",
         "closeBrowserFailed": "关闭 ChatGPT 浏览器会话失败。",
-        "bindConversationFailed": "绑定 ChatGPT 会话失败。",
-        "bindingRequestFailed": "获取一次性绑定码失败。",
-        "loadBrowserFailed": "读取浏览器状态失败。",
-        "loadConnectorsFailed": "读取连接列表失败。",
-        "memberUnavailable": "所选成员已不存在，请刷新工作组。"
+        "bindConversationFailed": "绑定 ChatGPT 会话失败。"
       },
       "nextAction": {
         "open_chatgpt": "打开 ChatGPT",
@@ -1393,143 +1335,9 @@
         "bind_current_chat": "绑定当前会话",
         "retry_delivery": "重试投递",
         "inspect_error": "检查错误",
-        "login_chatgpt": "登录 ChatGPT",
-        "resolve_draft": "先处理输入框草稿",
-        "wait_for_reply": "等待当前回答结束",
-        "inspect_browser": "检查浏览器状态",
-        "bind_chat": "设置回传聊天"
+        "login_chatgpt": "登录 ChatGPT"
       },
-      "nextActionReason": {
-        "resolve_draft": "报告已保留，处理完输入框草稿后会自动继续投递。",
-        "wait_for_reply": "不会打断当前回答，结束后自动继续投递。",
-        "inspect_browser": "尚未确认页面就绪。请检查浏览器；输入框未就绪不代表账号已退出。",
-        "login_chatgpt": "请先在这个浏览器中登录，再继续投递保留的报告。",
-        "bind_chat": "选择一个目标聊天并保存地址；这不会更改聊天的身份绑定。",
-        "open_chatgpt": "需要登录或检查页面时打开专用浏览器。",
-        "wait_for_chat_bind": "报告已提交，正在等待新的聊天地址，不要重复发送。",
-        "inspect_error": "送达结果尚未确认。先检查原聊天，避免重复投递。",
-        "retry_delivery": "报告仍被保留，检查浏览器可用后再恢复投递。"
-      },
-      "common": {
-        "none": "无",
-        "notSet": "未设置",
-        "loading": "读取中…"
-      },
-      "reference": {
-        "mcpCopyHint": "将直连地址加入 ChatGPT 插件。工具调用记录只能证明调用发生，不等于双向投递已验收。",
-        "mcpCreateHint": "为所选网页组长创建原版直连地址。",
-        "mcpLastCallFailed": "最近调用失败",
-        "mcpNeedsRotation": "需要轮换",
-        "mcpNotCreated": "尚未创建 MCP URL",
-        "mcpRotateHint": "旧连接没有可复制地址；轮换将替换原连接。",
-        "mcpWaitingFirstCall": "等待首次工具调用",
-        "instructionCreateApp": "使用复制的原版 MCP 地址创建 CCCC 插件，按该地址要求配置验证方式。",
-        "instructionEnableConnector": "在支持工具调用的聊天中启用 CCCC 插件。",
-        "instructionOpenSettings": "在 ChatGPT 的设置中进入插件和高级设置，选择创建插件。",
-        "permissionDocsLink": "OpenAI app 权限说明",
-        "permissionHint": "首次工具调用可能要求确认权限。按 ChatGPT 提示操作；托管工作区由管理员控制。",
-        "title": "原版设置与权限说明",
-        "description": "保留原版直连方式供检查。使用现有 OpenAI 隧道插件时，各工作组无需再创建一套插件。",
-        "summaryTitle": "原版连接状态",
-        "chatgpt": "专用浏览器",
-        "chatgptClosed": "未打开",
-        "chatgptSignInNeeded": "需检查登录",
-        "chatgptSignedIn": "输入框已就绪",
-        "mcpApp": "工具连接",
-        "mcpBound": "当前组已绑定聊天",
-        "mcpTitle": "原版直连地址",
-        "mcpSeenAt": "最近调用 {{time}}",
-        "member": "网页组长",
-        "memberDuplicate": "有 {{count}} 个网页成员",
-        "memberMissing": "未添加网页组长",
-        "memberRunning": "运行中",
-        "memberStopped": "已停止",
-        "optionalNote": "以下地址与公网设置只适用于原版直接连接方式。",
-        "returnNewChat": "下次投递新建聊天",
-        "returnNone": "未保存回传地址",
-        "returnSaved": "回传地址已保存",
-        "returnTarget": "回传目标",
-        "warningLocalUrl": "本机地址不能直接供云端访问；已有隧道插件不受此项影响。",
-        "warningNonHttps": "原版云端直连需要 HTTPS 地址。",
-        "warningRotate": "轮换会撤销原连接，请确认后操作。",
-        "webAccess": "公网直连",
-        "webAccessNeedsSetup": "直连未配置",
-        "webAccessReady": "直连地址已配置",
-        "webAccessNote": "仅供原版云端直接访问；本页现有隧道绑定不依赖此项。"
-      },
-      "title": "ChatGPT 连接",
-      "description": "配置共享浏览器，再为每个工作组选择组长和回传聊天。",
-      "editor": {
-        "title": "回传聊天",
-        "description": "选择后先确认地址。保存只设置回传目标，不会创建新的聊天身份绑定。",
-        "choiceCurrent": "使用浏览器当前聊天",
-        "choiceCurrentDetail": "点击“读取当前聊天”后再确认，不会自动把别的组的聊天存进来。",
-        "choicePasted": "粘贴已有聊天链接",
-        "choicePastedDetail": "使用带 /c/ 的完整 ChatGPT 聊天地址。",
-        "choiceNew": "下次投递时新建聊天",
-        "choiceNewDetail": "现在只保存选择。下一次收到报告时才新建聊天；新聊天仍需启用插件并绑定身份。",
-        "currentChatAvailable": "当前地址：{{target}}",
-        "currentChatUnavailable": "当前页面没有可用的 ChatGPT 聊天地址。",
-        "noUnsaved": "没有未保存的修改",
-        "unsaved": "地址修改尚未保存",
-        "urlInvalid": "请输入完整的 https://chatgpt.com/c/... 聊天地址。",
-        "urlLabel": "聊天地址"
-      },
-      "groupDetail": {
-        "changeForemanHint": "本地组长也可以使用此处的“更换组长”编辑配置。",
-        "chatToGroupTitle": "聊天 → 工作组",
-        "groupToChatTitle": "工作组 → 聊天",
-        "foremanRole": "组长",
-        "identityBound": "身份已绑定",
-        "identityNotBound": "身份未绑定",
-        "identityNote": "只表示这个聊天有权使用该工作组，不代表报告已经成功回传。",
-        "lastDelivery": "最近投递",
-        "lastDeliveryNone": "尚无投递记录",
-        "localForemanNote": "当前由本地模型担任组长，不需要绑定 ChatGPT。",
-        "memberLabel": "网页成员",
-        "members": "其他成员",
-        "membersUnit": "{{count}} 人",
-        "multipleWarning": "检测到 {{count}} 个网页成员，请检查组长配置。",
-        "noForeman": "尚无组长",
-        "queue": "等待报告",
-        "returnSaved": "回传地址已保存",
-        "returnNotSaved": "回传地址未保存",
-        "returnNewChat": "下次投递时新建",
-        "returnNote": "回传还需要浏览器登录和插件可用；以实际收到的工具回执为准。",
-        "running": "运行中",
-        "stopped": "已停止",
-        "runtime": "模型类别",
-        "runtimeLocal": "本地模型",
-        "runtimeWeb": "网页模型",
-        "runtimeNone": "未设置",
-        "savedAt": "保存于 {{time}}"
-      },
-      "groups": {
-        "title": "工作组概览",
-        "description": "选择一个工作组，查看或修改它自己的组长与连接。切换列表不会改变聊天绑定。",
-        "empty": "还没有工作组",
-        "identityBound": "已绑定聊天",
-        "notConnected": "未绑定聊天",
-        "urlReady": "已创建连接入口"
-      },
-      "browserMode": {
-        "visible": "带窗口运行",
-        "background": "后台窗口",
-        "headless": "无窗口运行"
-      },
-      "deliveryMode": {
-        "standard": "标准投递",
-        "image_compat": "图片兼容投递"
-      },
-      "deliveryState": {
-        "submitted": "已送达页面",
-        "submitting": "正在投递",
-        "failed": "投递失败",
-        "deferred": "等待页面可用",
-        "submission_ambiguous": "送达结果未确认",
-        "completion_ambiguous": "等待投递确认",
-        "pending_new_chat_bind": "等待新聊天地址"
-      }
+      "common": { "none": "无", "notSet": "未设置" }
     }
   },
   "webAccess": {

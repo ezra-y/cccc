@@ -103,14 +103,6 @@ interface SettingsModalProps {
   isDark: boolean;
   groupId?: string;
   groupDoc?: GroupDoc | null;
-  onCreateGroup?: (groupId: string) => void;
-  onCreateActor?: (
-    groupId: string,
-    preset: { role: "foreman" | "peer"; runtime?: "web_model" },
-  ) => void;
-  onEditActor?: (groupId: string, actorId: string, assistantKind: "web_model" | "local") => void;
-  onOpenWebModelGuidance?: (groupId: string) => void;
-  webModelsRefreshNonce?: number;
 }
 
 function SettingsTabFallback() {
@@ -131,11 +123,6 @@ export function SettingsModal({
   isDark,
   groupId,
   groupDoc,
-  onCreateGroup,
-  onCreateActor,
-  onEditActor,
-  onOpenWebModelGuidance,
-  webModelsRefreshNonce = 0,
 }: SettingsModalProps) {
   const { t } = useTranslation("settings");
   const { modalRef } = useModalA11y(isOpen, onClose);
@@ -1191,7 +1178,7 @@ export function SettingsModal({
       title={
         <div className="min-w-0">
           <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-muted)]">
-            {t("navigation.workspaceSettings")}
+            Workspace Settings
           </div>
           <h2 className="mt-1 truncate text-[1.15rem] font-semibold text-[var(--color-text-primary)]">
             {t("title")}
@@ -1474,11 +1461,6 @@ export function SettingsModal({
                     isDark={isDark}
                     isActive={scope === "global" && activeTab === "webModels"}
                     currentGroupId={groupId}
-                    refreshNonce={webModelsRefreshNonce}
-                    onCreateGroup={onCreateGroup}
-                    onCreateActor={onCreateActor}
-                    onEditActor={onEditActor}
-                    onOpenGuidance={onOpenWebModelGuidance}
                     onOpenWebAccess={() => setGlobalTab("webAccess")}
                   />
                 )}

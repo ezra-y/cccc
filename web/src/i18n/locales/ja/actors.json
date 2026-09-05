@@ -1,7 +1,4 @@
 {
-  "changeForeman": "Foreman を変更",
-  "webForeman": "Web モデル",
-  "localForeman": "ローカルモデル",
   "agentNotFound": "エージェントが見つかりません",
   "loadingAgent": "エージェントを読み込み中…",
   "foreman": "フォアマン",
@@ -78,7 +75,7 @@
   "commandOverride": "コマンドオーバーライド",
   "commandOverrideOptional": "コマンドオーバーライド（任意）",
   "useRuntimeDefaultCommand": "ランタイム既定コマンドを使う",
-  "opencodeManagedModelHint": "モデル切り替え後、OpenCode TUI でメッセージを 1 件送信すると、以降の CCCC リクエストにも反映されます。起動引数 --model provider/model でも指定できます。",
+  "opencodeManagedModelHint": "モデル切り替え後、Runtime の TUI でメッセージを 1 件送信すると、以降の CCCC リクエストにも反映されます。起動引数 --model provider/model でも指定できます。",
   "usingRuntimeDefaultCommand": "現在はランタイム既定コマンドを使用中：",
   "enterCommand": "コマンドを入力してください…",
   "default": "デフォルト：",
@@ -273,5 +270,14 @@
   "headlessControlStalled": "制御タスクは待機中です",
   "headlessControlCompleted": "制御タスクが完了しました",
   "headlessControlFailed": "制御タスクが失敗しました",
-  "headlessControlUpdated": "制御タスクを更新しました"
+  "headlessControlUpdated": "制御タスクを更新しました",
+  "terminalHistory": "ターミナル履歴",
+  "openTerminalHistory": "ターミナル履歴を表示",
+  "historyLoading": "履歴を読み込み中…",
+  "historyLoadFailed": "ターミナル履歴を読み込めませんでした。",
+  "historyLoadOlder": "以前の履歴を読み込む",
+  "historyRetry": "再試行",
+  "historyStart": "保持されている履歴の先頭です",
+  "historyEmpty": "このエージェントの保持されたターミナル履歴はまだありません。",
+  "historyTruncated": "古い出力はバッファから破棄済みです。"
 }
