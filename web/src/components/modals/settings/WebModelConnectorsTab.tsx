@@ -1152,7 +1152,7 @@ export default function WebModelConnectorsTab({
                     ariaLabel={wm("t05.selectGroup")}
                     placeholder={wm("t05.selectGroup")}
                     emptyText={wm("prerequisites.noGroupAvailable")}
-                    className={inputClass(isDark)}
+                    className={`${inputClass(isDark)} active:!transform-none`}
                     contentClassName="!w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] !bg-[var(--color-bg-secondary)] !backdrop-blur-none"
                   />
                 </div>
