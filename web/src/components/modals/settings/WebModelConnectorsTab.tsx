@@ -127,16 +127,16 @@ function setupPillClass(tone: SetupTone): string {
 function SetupSection({
   title,
   children,
-  review,
+  step,
 }: {
   title: ReactNode;
   children: ReactNode;
-  review?: string;
+  step?: "account" | "connection" | "target";
 }) {
   return (
     <div
-      data-t05-review={review}
-      className={`border-t border-[var(--glass-border-subtle)] pt-3 first:border-t-0 first:pt-0 ${review ? "rounded-lg p-3" : ""}`}
+      data-setup-step={step}
+      className="border-t border-[var(--glass-border-subtle)] pt-3 first:border-t-0 first:pt-0"
     >
       <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--color-text-muted)]">
         {title}
@@ -983,379 +983,364 @@ export default function WebModelConnectorsTab({
           </div>
         ) : null}
 
-        <section
-          data-t05-change="shared-browser"
-          aria-labelledby="t05-shared-login-heading"
-          className="space-y-3"
-        >
-          <header className="space-y-2">
-            <h4
-              id="t05-shared-login-heading"
-              data-t05-review="shared-login"
-              className="inline-block text-base font-semibold leading-6 text-[var(--color-text-primary)]"
-            >
-              {wm("t05.sharedTitle")}
-            </h4>
-            <p className="text-sm leading-6 text-[var(--color-text-secondary)]">
-              {wm("t05.sharedLoginNote")}
-            </p>
-          </header>
-          <div data-testid="account-login-controls" className={settingsWorkspacePanelClass(isDark)}>
-            <div className="flex flex-wrap items-center gap-2">
-              <span data-testid="shared-login-status" className="mr-auto text-sm">
-                {sharedError ? wm("t05.sharedUnavailable") : browserStatusLabel}
-              </span>
-              <button
-                type="button"
-                data-t05-change="open-shared-browser"
-                disabled={sharedBusy}
-                onClick={() => void openBrowserLogin()}
-                className={primaryButtonClass(sharedBusy)}
-              >
-                {wm("buttons.openChatGpt")}
-              </button>
-              <button
-                type="button"
-                data-t05-change="preview-toggle"
-                onClick={() => setShowBrowserSurface((v) => !v)}
-                className={secondaryButtonClass("sm")}
-              >
-                {showBrowserSurface ? wm("t05.hide") : wm("t05.view")}
-              </button>
-              <button
-                type="button"
-                disabled={sharedBusy}
-                onClick={() => void checkBrowserSessionStatus()}
-                className={secondaryButtonClass("sm")}
-              >
-                {wm("buttons.checkStatus")}
-              </button>
-            </div>
-            <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-              {wm("t05.sharedBrowser")}
-            </p>
-            {sharedError && (
-              <p role="alert" className="mt-2 text-sm text-rose-600 dark:text-rose-300">
-                {sharedError}
-              </p>
-            )}
-            {showBrowserSurface && (
-              <div className="mt-3">
-                <div className="mb-2 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    data-t05-change="restart-shared-browser"
-                    disabled={sharedBusy}
-                    onClick={() => void reloadEmbeddedBrowser()}
-                    className={secondaryButtonClass("sm")}
-                  >
-                    {wm("buttons.reloadChatGpt")}
-                  </button>
-                  <button
-                    type="button"
-                    data-t05-change="close-shared-browser"
-                    disabled={sharedBusy}
-                    onClick={() => void closeBrowserSession()}
-                    className={secondaryButtonClass("sm")}
-                  >
-                    {wm("buttons.closeBrowser")}
-                  </button>
+        <section className={settingsWorkspacePanelClass(isDark)}>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="text-sm font-semibold text-[var(--color-text-primary)]">
+                  {wm("summary.title")}
                 </div>
-                <ProjectedBrowserSurfacePanel
-                  key={`shared-chatgpt:${browserSurfaceRestartNonce}`}
-                  isDark={isDark}
-                  refreshNonce={browserSurfaceRefreshNonce}
-                  defaultViewerMode="browser"
-                  viewportClassName="h-[60vh] min-h-[350px] max-h-[700px]"
-                  loadSession={loadBrowserSurfaceSession}
-                  webSocketUrl={api.getSharedWebModelBrowserWebSocketUrl()}
-                  fallbackUrl="https://chatgpt.com/"
-                  labels={{
-                    starting: wm("browserSurface.starting"),
-                    waiting: wm("browserSurface.waiting"),
-                    ready: wm("browserSurface.ready"),
-                    failed: wm("browserSurface.failed"),
-                    closed: wm("browserSurface.closed"),
-                    reconnecting: wm("browserSurface.reconnecting"),
-                    reconnect: wm("browserSurface.reconnect"),
-                    frameAlt: wm("browserSurface.frameAlt"),
-                  }}
-                />
+                <span
+                  className={[
+                    "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
+                    setupPillClass(runtimeStatus.tone),
+                  ].join(" ")}
+                >
+                  {runtimeStatus.label}
+                </span>
+                {queuedCount > 0 ? (
+                  <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-200">
+                    {wm("queue.queued", { count: queuedCount })}
+                  </span>
+                ) : null}
               </div>
-            )}
+              <div className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
+                {wm("next.prefix", { action: nextSetupAction })}
+              </div>
+            </div>
           </div>
+          {extraChatGptActors.length ? (
+            <div className="mt-3 text-xs leading-5 text-amber-700 dark:text-amber-300">
+              {wm("actorSection.multipleWarning")}
+            </div>
+          ) : null}
         </section>
 
-        <section
-          data-t05-change="web-group-selector"
-          aria-labelledby="t05-web-group-heading"
-          className="!mt-8 space-y-4"
-        >
-          <header className="space-y-2">
-            <h4
-              id="t05-web-group-heading"
-              data-t05-review="group-selector"
-              className="inline-block text-base font-semibold leading-6 text-[var(--color-text-primary)]"
-            >
-              <label htmlFor="t05-web-group">{wm("t05.selectGroup")}</label>
-            </h4>
-            <p className="text-sm leading-6 text-[var(--color-text-secondary)]">
-              {wm("t05.groupScope")}
-            </p>
-          </header>
-          <div className="relative">
-            <select
-              id="t05-web-group"
-              style={{
-                colorScheme: isDark ? "dark" : "light",
-                appearance: "none",
-                paddingInlineEnd: "3rem",
-              }}
-              value={groupId}
-              onChange={(event) => {
-                if (
-                  targetDraftDirty &&
-                  targetDraftTouched &&
-                  !window.confirm(wm("t05.confirmDiscard"))
-                )
-                  return;
-                selectGroup(event.target.value);
-              }}
-              className={inputClass(isDark)}
-            >
-              {!groupId && <option value="">{wm("t05.selectGroup")}</option>}
-              {groups.map((group) => (
-                <option key={group.group_id} value={group.group_id}>
-                  {group.title || group.group_id}
-                </option>
-              ))}
-            </select>
-            <ChevronDownIcon
-              data-testid="web-group-chevron"
-              aria-hidden="true"
-              className="pointer-events-none absolute end-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-secondary)]"
-            />
-          </div>
-
-          <section className={settingsWorkspacePanelClass(isDark)}>
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="text-sm font-semibold text-[var(--color-text-primary)]">
-                    {wm("summary.title")}
-                  </div>
-                  <span
-                    className={[
-                      "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
-                      setupPillClass(runtimeStatus.tone),
-                    ].join(" ")}
-                  >
-                    {runtimeStatus.label}
-                  </span>
-                  {queuedCount > 0 ? (
-                    <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-200">
-                      {wm("queue.queued", { count: queuedCount })}
-                    </span>
-                  ) : null}
-                </div>
-                <div className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
-                  {wm("next.prefix", { action: nextSetupAction })}
-                </div>
-              </div>
-            </div>
-            {extraChatGptActors.length ? (
-              <div className="mt-3 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                {wm("actorSection.multipleWarning")}
-              </div>
-            ) : null}
-          </section>
-
-          {!selectedActor ? (
-            <section className={settingsWorkspacePanelClass(isDark)}>
+        <section className={settingsWorkspacePanelClass(isDark)} data-testid="web-model-setup">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
               <div className="text-sm font-semibold text-[var(--color-text-primary)]">
-                {wm("empty.title")}
+                {selectedActor
+                  ? wm("chatSetup.title", { actor: selectedActorLabel || actorId })
+                  : wm("header.title")}
               </div>
               <p className="mt-1 text-sm leading-6 text-[var(--color-text-tertiary)]">
-                {wm("t05.emptyGroup")}
+                {wm("chatSetup.description")}
               </p>
-            </section>
-          ) : null}
-
-          {selectedActor ? (
-            <section className={settingsWorkspacePanelClass(isDark)}>
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-[var(--color-text-primary)]">
-                    {wm("chatSetup.title", { actor: selectedActorLabel || actorId })}
-                  </div>
-                  <p className="mt-1 text-sm leading-6 text-[var(--color-text-tertiary)]">
-                    {wm("chatSetup.description")}
-                  </p>
-                </div>
-                <div className="flex shrink-0 flex-wrap items-start gap-2 sm:justify-end">
-                  <span
-                    className={[
-                      "inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold",
-                      setupPillClass(runtimeStatus.tone),
-                    ].join(" ")}
-                  >
-                    {runtimeStatus.label}
-                  </span>
-                </div>
-              </div>
-
-              <p
-                data-testid="web-member-role"
-                className="mt-2 text-sm text-[var(--color-text-secondary)]"
+            </div>
+            <div className="flex shrink-0 flex-wrap items-start gap-2 sm:justify-end">
+              <span
+                className={[
+                  "inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold",
+                  setupPillClass(runtimeStatus.tone),
+                ].join(" ")}
               >
-                {wm("t05.currentMember", {
-                  member: selectedActorLabel || actorId,
-                  role: wm(selectedActor.role === "foreman" ? "t05.roleForeman" : "t05.rolePeer"),
-                })}
-              </p>
-              <div className="mt-4 space-y-4">
-                <SetupSection
-                  review="chat-binding"
-                  title={<span data-t05-change="chat-binding">{wm("t05.identity")}</span>}
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span data-t05-change="binding-status">
-                      {sessionBound ? wm("t05.bound") : wm("t05.unbound")}
-                    </span>
-                    <button
-                      type="button"
-                      data-t05-change="copy-binding"
-                      disabled={bindingBusy || createBusy}
-                      onClick={() => void copyBinding()}
-                      className={secondaryButtonClass("sm")}
+                {runtimeStatus.label}
+              </span>
+            </div>
+          </div>
+          <div className="mt-4 space-y-4">
+            <SetupSection step="account" title={wm("chatSetup.accountTitle")}>
+              <div data-testid="account-login-controls" className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="mr-auto min-w-0 text-sm leading-6 text-[var(--color-text-secondary)]">
+                    <span
+                      data-testid="shared-login-status"
+                      className="font-semibold text-[var(--color-text-primary)]"
                     >
-                      {wm("t05.copy")}
-                    </button>
-                    {sessionBound && selectedConnector && (
+                      {sharedError ? wm("t05.sharedUnavailable") : browserStatusLabel}
+                    </span>
+                    <span
+                      data-t05-review="shared-login"
+                      className="ml-2 inline-block text-xs rounded-sm"
+                    >
+                      {wm("t05.sharedLoginNote")}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    data-t05-change="open-shared-browser"
+                    disabled={sharedBusy}
+                    onClick={() => void openBrowserLogin()}
+                    className={primaryButtonClass(sharedBusy)}
+                  >
+                    {wm("buttons.openChatGpt")}
+                  </button>
+                  <button
+                    type="button"
+                    data-t05-change="preview-toggle"
+                    onClick={() => setShowBrowserSurface((v) => !v)}
+                    className={secondaryButtonClass("sm")}
+                  >
+                    {showBrowserSurface ? wm("t05.hide") : wm("t05.view")}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={sharedBusy}
+                    onClick={() => void checkBrowserSessionStatus()}
+                    className={secondaryButtonClass("sm")}
+                  >
+                    {wm("buttons.checkStatus")}
+                  </button>
+                </div>
+                <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+                  {wm("t05.sharedBrowser")}
+                </p>
+                {sharedError && (
+                  <p role="alert" className="mt-2 text-sm text-rose-600 dark:text-rose-300">
+                    {sharedError}
+                  </p>
+                )}
+                {showBrowserSurface && (
+                  <div className="mt-3">
+                    <div className="mb-2 flex flex-wrap gap-2">
                       <button
                         type="button"
-                        data-t05-change="disconnect-chat"
-                        disabled={Boolean(revokeBusyId)}
-                        onClick={() => void revokeConnector(selectedConnector.connector_id)}
+                        data-t05-change="restart-shared-browser"
+                        disabled={sharedBusy}
+                        onClick={() => void reloadEmbeddedBrowser()}
                         className={secondaryButtonClass("sm")}
                       >
-                        {wm("t05.disconnect")}
+                        {wm("buttons.reloadChatGpt")}
                       </button>
-                    )}
+                      <button
+                        type="button"
+                        data-t05-change="close-shared-browser"
+                        disabled={sharedBusy}
+                        onClick={() => void closeBrowserSession()}
+                        className={secondaryButtonClass("sm")}
+                      >
+                        {wm("buttons.closeBrowser")}
+                      </button>
+                    </div>
+                    <ProjectedBrowserSurfacePanel
+                      key={`shared-chatgpt:${browserSurfaceRestartNonce}`}
+                      isDark={isDark}
+                      refreshNonce={browserSurfaceRefreshNonce}
+                      defaultViewerMode="browser"
+                      viewportClassName="h-[60vh] min-h-[350px] max-h-[700px]"
+                      loadSession={loadBrowserSurfaceSession}
+                      webSocketUrl={api.getSharedWebModelBrowserWebSocketUrl()}
+                      fallbackUrl="https://chatgpt.com/"
+                      labels={{
+                        starting: wm("browserSurface.starting"),
+                        waiting: wm("browserSurface.waiting"),
+                        ready: wm("browserSurface.ready"),
+                        failed: wm("browserSurface.failed"),
+                        closed: wm("browserSurface.closed"),
+                        reconnecting: wm("browserSurface.reconnecting"),
+                        reconnect: wm("browserSurface.reconnect"),
+                        frameAlt: wm("browserSurface.frameAlt"),
+                      }}
+                    />
                   </div>
-                  <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-                    {wm("t05.identityNote")}
-                  </p>
-                </SetupSection>
-                <details data-t05-change="legacy-setup">
-                  <summary
-                    data-t05-review="legacy-fold"
-                    className="cursor-pointer text-sm rounded-md"
-                  >
-                    {wm("t05.original")}
-                  </summary>
-                  {!webAccessReady ? (
-                    <div className="mt-4 flex flex-col gap-3 border-t border-[var(--glass-border-subtle)] pt-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="min-w-0">
-                        <div className="text-xs font-medium text-[var(--color-text-primary)]">
-                          {wm("summary.webAccess")}
-                        </div>
-                        <div className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
-                          {webAccessPrerequisiteLabel}
-                        </div>
-                      </div>
-                      {onOpenWebAccess ? (
+                )}
+              </div>
+            </SetupSection>
+
+            <div
+              data-t05-change="web-group-selector"
+              data-t05-review="group-selector"
+              className="rounded-lg border-t border-[var(--glass-border-subtle)] p-3"
+            >
+              <label className={labelClass(isDark)} htmlFor="t05-web-group">
+                {wm("t05.selectGroup")}
+              </label>
+              <div className="relative">
+                <select
+                  id="t05-web-group"
+                  style={{
+                    colorScheme: isDark ? "dark" : "light",
+                    appearance: "none",
+                    paddingInlineEnd: "3rem",
+                  }}
+                  value={groupId}
+                  onChange={(event) => {
+                    if (
+                      targetDraftDirty &&
+                      targetDraftTouched &&
+                      !window.confirm(wm("t05.confirmDiscard"))
+                    )
+                      return;
+                    selectGroup(event.target.value);
+                  }}
+                  className={inputClass(isDark)}
+                >
+                  {!groupId && <option value="">{wm("t05.selectGroup")}</option>}
+                  {groups.map((group) => (
+                    <option key={group.group_id} value={group.group_id}>
+                      {group.title || group.group_id}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDownIcon
+                  data-testid="web-group-chevron"
+                  aria-hidden="true"
+                  className="pointer-events-none absolute end-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-secondary)]"
+                />
+              </div>
+              <p className="mt-2 text-xs leading-5 text-[var(--color-text-tertiary)]">
+                {wm("t05.groupScope")}
+              </p>
+              {selectedActor ? (
+                <p
+                  data-testid="web-member-role"
+                  className="mt-2 text-sm text-[var(--color-text-secondary)]"
+                >
+                  {wm("t05.currentMember", {
+                    member: selectedActorLabel || actorId,
+                    role: wm(selectedActor.role === "foreman" ? "t05.roleForeman" : "t05.rolePeer"),
+                  })}
+                </p>
+              ) : null}
+            </div>
+
+            {selectedActor ? (
+              <>
+                <SetupSection step="connection" title={wm("chatSetup.mcpAppTitle")}>
+                  <div data-t05-review="chat-binding" className="rounded-lg p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span data-t05-change="binding-status">
+                        {sessionBound ? wm("t05.bound") : wm("t05.unbound")}
+                      </span>
+                      <button
+                        type="button"
+                        data-t05-change="copy-binding"
+                        disabled={bindingBusy || createBusy}
+                        onClick={() => void copyBinding()}
+                        className={secondaryButtonClass("sm")}
+                      >
+                        {wm("t05.copy")}
+                      </button>
+                      {sessionBound && selectedConnector && (
                         <button
                           type="button"
-                          onClick={onOpenWebAccess}
-                          className={`${secondaryButtonClass("sm")} shrink-0`}
+                          data-t05-change="disconnect-chat"
+                          disabled={Boolean(revokeBusyId)}
+                          onClick={() => void revokeConnector(selectedConnector.connector_id)}
+                          className={secondaryButtonClass("sm")}
                         >
-                          {wm("buttons.openWebAccess")}
+                          {wm("t05.disconnect")}
                         </button>
-                      ) : null}
+                      )}
                     </div>
-                  ) : null}
-                  <SetupSection title={wm("chatSetup.mcpAppTitle")}>
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span
-                            className={[
-                              "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
-                              setupPillClass(mcpStatusTone),
-                            ].join(" ")}
-                          >
-                            {mcpStatusLabel}
-                          </span>
+                    <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+                      {wm("t05.identityNote")}
+                    </p>
+                  </div>
+                  <details data-t05-change="legacy-setup" className="mt-3">
+                    <summary
+                      data-t05-review="legacy-fold"
+                      className="cursor-pointer text-sm rounded-md"
+                    >
+                      {wm("t05.original")}
+                    </summary>
+                    {!webAccessReady ? (
+                      <div className="mt-4 flex flex-col gap-3 border-t border-[var(--glass-border-subtle)] pt-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="text-xs font-medium text-[var(--color-text-primary)]">
+                            {wm("summary.webAccess")}
+                          </div>
+                          <div className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
+                            {webAccessPrerequisiteLabel}
+                          </div>
                         </div>
-                        <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
-                          {mcpInstructionDetail}
-                        </p>
-                        {!chatGptSeen ? (
-                          <>
-                            <ol className="mt-3 list-decimal space-y-1 pl-4 text-xs leading-5 text-[var(--color-text-tertiary)]">
-                              <li>{wm("mcp.instructionOpenSettings")}</li>
-                              <li>{wm("mcp.instructionCreateApp")}</li>
-                              <li>{wm("mcp.instructionEnableConnector")}</li>
-                            </ol>
-                            <div className="mt-3 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
-                              <span>{wm("mcp.permissionHint")}</span>
-                              <a
-                                href="https://help.openai.com/en/articles/11487775-apps-in-chatgpt"
-                                target="_blank"
-                                rel="noreferrer"
-                                className="ml-2 font-semibold underline-offset-2 hover:underline"
-                              >
-                                {wm("mcp.permissionDocsLink")}
-                              </a>
-                            </div>
-                          </>
-                        ) : null}
-                        {selectedConnector && !selectedMcpUrl ? (
-                          <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                            {wm("warnings.rotateOldConnector")}
-                          </div>
-                        ) : null}
-                        {mcpUrlLocalWarning ? (
-                          <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                            {wm("warnings.localMcpUrl")}
-                          </div>
-                        ) : null}
-                        {mcpUrlHttpsWarning && !mcpUrlLocalWarning ? (
-                          <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                            {wm("warnings.nonHttpsMcpUrl")}
-                          </div>
+                        {onOpenWebAccess ? (
+                          <button
+                            type="button"
+                            onClick={onOpenWebAccess}
+                            className={`${secondaryButtonClass("sm")} shrink-0`}
+                          >
+                            {wm("buttons.openWebAccess")}
+                          </button>
                         ) : null}
                       </div>
-                      <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
-                        {selectedMcpUrl ? (
-                          <button
-                            type="button"
-                            onClick={() => void copyValue(selectedMcpUrl, wm("copyLabels.mcpUrl"))}
-                            className={
-                              chatGptSeen ? secondaryButtonClass("sm") : primaryButtonClass(false)
-                            }
-                          >
-                            {wm("buttons.copyMcpUrl")}
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => void createConnector(actorId)}
-                            disabled={createBusy || !groupId || !actorId || !webAccessReady}
-                            className={primaryButtonClass(createBusy)}
-                          >
-                            {selectedConnector
-                              ? wm("buttons.rotateMcpUrl")
-                              : wm("buttons.createMcpUrl")}
-                          </button>
-                        )}
+                    ) : null}
+                    <div className="mt-3">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span
+                              className={[
+                                "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
+                                setupPillClass(mcpStatusTone),
+                              ].join(" ")}
+                            >
+                              {mcpStatusLabel}
+                            </span>
+                          </div>
+                          <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
+                            {mcpInstructionDetail}
+                          </p>
+                          {!chatGptSeen ? (
+                            <>
+                              <ol className="mt-3 list-decimal space-y-1 pl-4 text-xs leading-5 text-[var(--color-text-tertiary)]">
+                                <li>{wm("mcp.instructionOpenSettings")}</li>
+                                <li>{wm("mcp.instructionCreateApp")}</li>
+                                <li>{wm("mcp.instructionEnableConnector")}</li>
+                              </ol>
+                              <div className="mt-3 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
+                                <span>{wm("mcp.permissionHint")}</span>
+                                <a
+                                  href="https://help.openai.com/en/articles/11487775-apps-in-chatgpt"
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="ml-2 font-semibold underline-offset-2 hover:underline"
+                                >
+                                  {wm("mcp.permissionDocsLink")}
+                                </a>
+                              </div>
+                            </>
+                          ) : null}
+                          {selectedConnector && !selectedMcpUrl ? (
+                            <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                              {wm("warnings.rotateOldConnector")}
+                            </div>
+                          ) : null}
+                          {mcpUrlLocalWarning ? (
+                            <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                              {wm("warnings.localMcpUrl")}
+                            </div>
+                          ) : null}
+                          {mcpUrlHttpsWarning && !mcpUrlLocalWarning ? (
+                            <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                              {wm("warnings.nonHttpsMcpUrl")}
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {selectedMcpUrl ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void copyValue(selectedMcpUrl, wm("copyLabels.mcpUrl"))
+                              }
+                              className={
+                                chatGptSeen ? secondaryButtonClass("sm") : primaryButtonClass(false)
+                              }
+                            >
+                              {wm("buttons.copyMcpUrl")}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => void createConnector(actorId)}
+                              disabled={createBusy || !groupId || !actorId || !webAccessReady}
+                              className={primaryButtonClass(createBusy)}
+                            >
+                              {selectedConnector
+                                ? wm("buttons.rotateMcpUrl")
+                                : wm("buttons.createMcpUrl")}
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </SetupSection>
-                </details>
+                  </details>
+                </SetupSection>
 
                 <SetupSection
+                  step="target"
                   title={
                     <span data-t05-change="group-return-target">
                       {wm("chatSetup.deliveryTargetTitle")}
@@ -1480,6 +1465,7 @@ export default function WebModelConnectorsTab({
                               {targetUseCurrentAvailable ? (
                                 <button
                                   type="button"
+                                  data-testid="use-current-browser-chat"
                                   onClick={() => {
                                     setTargetDraftMode("existing");
                                     setConversationUrlDraft(currentBrowserConversationUrl);
@@ -1525,7 +1511,6 @@ export default function WebModelConnectorsTab({
                     ) : null}
                   </div>
                 </SetupSection>
-
                 <details className="text-xs leading-5 text-[var(--color-text-tertiary)]">
                   <summary className="cursor-pointer font-semibold text-[var(--color-text-secondary)]">
                     {wm("advanced.summary")}
@@ -1656,9 +1641,18 @@ export default function WebModelConnectorsTab({
                     </button>
                   </div>
                 </details>
+              </>
+            ) : (
+              <div className="border-t border-[var(--glass-border-subtle)] pt-3">
+                <div className="text-sm font-semibold text-[var(--color-text-primary)]">
+                  {wm("empty.title")}
+                </div>
+                <p className="mt-1 text-sm leading-6 text-[var(--color-text-tertiary)]">
+                  {wm("t05.emptyGroup")}
+                </p>
               </div>
-            </section>
-          ) : null}
+            )}
+          </div>
         </section>
       </div>
     </div>

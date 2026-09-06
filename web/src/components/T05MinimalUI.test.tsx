@@ -385,35 +385,36 @@ describe("group members shortcut", () => {
 
 describe("shared login, role, and confirmation ownership", () => {
   it.each([false, true])(
-    "places normal-size peer headings outside content cards and insets the native select arrow (dark=%s)",
+    "retains the upstream three steps and inserts group selection before connection (dark=%s)",
     async (isDark) => {
       await render(<WebModelConnectorsTab isDark={isDark} currentGroupId="g_a" />);
-      const shared = find("#t05-shared-login-heading");
-      const group = find("#t05-web-group-heading");
-      expect(shared.tagName).toBe("H4");
-      expect(group.tagName).toBe(shared.tagName);
-      expect(group.className).toBe(shared.className);
-      expect(shared.classList.contains("text-base")).toBe(true);
-      expect(shared.className).not.toMatch(/text-xl|text-2xl/);
-      expect(shared.closest("header")?.parentElement?.getAttribute("data-t05-change")).toBe(
-        "shared-browser",
-      );
-      const loginControls = find('[data-testid="account-login-controls"]');
-      expect(loginControls.contains(shared)).toBe(false);
-      const groupSection = group.closest("section")!;
-      expect(groupSection.className).not.toMatch(/rounded|border|bg-/);
-      expect(groupSection.contains(find('[data-testid="web-member-role"]'))).toBe(true);
-      expect(host.textContent).not.toMatch(/共享|共用/);
-      expect(host.textContent).toContain("登录一次，所有工作组都使用这个账号");
+      const account = find('[data-setup-step="account"]');
+      const connection = find('[data-setup-step="connection"]');
+      const target = find('[data-setup-step="target"]');
+      const selector = find('[data-t05-change="web-group-selector"]');
+      expect(account.parentElement).toBe(connection.parentElement);
+      expect(connection.parentElement).toBe(target.parentElement);
+      expect(account.textContent).toContain("1. 登录 ChatGPT");
+      expect(connection.textContent).toContain("2. 连接 CCCC MCP app");
+      expect(target.textContent).toContain("3. 选择投递目标");
+      expect(
+        account.compareDocumentPosition(selector) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(
+        selector.compareDocumentPosition(connection) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(
+        connection.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(account.querySelector('[data-t05-change="copy-binding"]')).toBeNull();
+      expect(connection.querySelector('[data-t05-change="copy-binding"]')).not.toBeNull();
+      expect(connection.querySelector('[data-t05-change="legacy-setup"]')).not.toBeNull();
+      expect(target.querySelector('[data-t05-change="save-return-target"]')).not.toBeNull();
+      expect(account.textContent).not.toMatch(/共享|共用/);
       const select = find("#t05-web-group") as HTMLSelectElement;
-      expect(group.querySelector('label[for="t05-web-group"]')).not.toBeNull();
       expect(select.style.colorScheme).toBe(isDark ? "dark" : "light");
-      expect(select.style.appearance).toBe("none");
       expect(select.style.paddingInlineEnd).toBe("3rem");
-      const arrow = find('[data-testid="web-group-chevron"]');
-      expect(arrow.getAttribute("aria-hidden")).toBe("true");
-      expect(arrow.classList.contains("pointer-events-none")).toBe(true);
-      expect(arrow.classList.contains("end-4")).toBe(true);
+      expect(find('[data-testid="web-group-chevron"]').classList.contains("end-4")).toBe(true);
       await choose("g_b");
       expect(select.value).toBe("g_b");
       expect(find('[data-testid="shared-login-status"]').textContent).toBeTruthy();
@@ -422,10 +423,35 @@ describe("shared login, role, and confirmation ownership", () => {
     },
   );
 
+  it("uses the current browser conversation as a draft and binds a return target only after Save", async () => {
+    await render();
+    const url = find('input[placeholder="https://chatgpt.com/c/..."]') as HTMLInputElement;
+    expect(url.value).toBe("https://chatgpt.com/c/g_a");
+    await click('[data-testid="use-current-browser-chat"]');
+    expect(url.value).toBe("https://chatgpt.com/c/shared-live");
+    expect(mocks.bindCurrentWebModelBrowserConversation).not.toHaveBeenCalled();
+    expect(mocks.createWebModelConnectorBinding).not.toHaveBeenCalled();
+    vi.mocked(window.confirm).mockReturnValue(false);
+    await click('[data-t05-change="save-return-target"]');
+    expect(mocks.bindCurrentWebModelBrowserConversation).not.toHaveBeenCalled();
+    vi.mocked(window.confirm).mockReturnValue(true);
+    await click('[data-t05-change="save-return-target"]');
+    expect(mocks.bindCurrentWebModelBrowserConversation).toHaveBeenCalledExactlyOnceWith({
+      groupId: "g_a",
+      actorId: "lead",
+      conversationUrl: "https://chatgpt.com/c/shared-live",
+      newChat: false,
+    });
+    expect(mocks.createWebModelConnectorBinding).not.toHaveBeenCalled();
+    expect(
+      mocks.sharedWebModelBrowser.mock.calls.every((call) => !["open", "close"].includes(call[0])),
+    ).toBe(true);
+  });
+
   it("renders one shared login before group selection and keeps it usable with no groups", async () => {
     mocks.fetchGroups.mockResolvedValue(ok({ groups: [] }));
     await render();
-    const shared = find('[data-t05-change="shared-browser"]');
+    const shared = find('[data-setup-step="account"]');
     const selector = find('[data-t05-change="web-group-selector"]');
     expect(
       shared.compareDocumentPosition(selector) & Node.DOCUMENT_POSITION_FOLLOWING,

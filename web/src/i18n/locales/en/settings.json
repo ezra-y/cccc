@@ -1360,7 +1360,7 @@
         "disconnect": "Disconnect chat",
         "copyHint": "For the existing tunnel app, copy the binding instructions. Original direct setup remains below.",
         "identityNote": "Binding uses the member’s actual group role; a web peer does not gain Foreman permissions. Set the return URL separately below.",
-        "original": "Original direct setup and permission notes",
+        "original": "Connection setup and permission notes",
         "sharedBrowser": "Reports can arrive with the preview hidden. Closing or restarting this browser affects all groups.",
         "view": "Show preview",
         "hide": "Hide preview",
