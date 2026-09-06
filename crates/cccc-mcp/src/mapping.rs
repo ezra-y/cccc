@@ -184,11 +184,22 @@ fn context_action(
     if namespace == "task" {
         return task_action(args, &action_name);
     }
+    if namespace == "coordination" && action_name == "decide" {
+        return Ok(("coordination_decide".into(), args));
+    }
     if action_name == "get" || action_name == "list" {
         return Ok(("context_get".into(), args));
     }
     let op_name = match (namespace, action_name.as_str()) {
         ("coordination", "update_brief" | "brief") => "coordination.brief.update",
+        ("coordination", "add_decision") => {
+            args.insert("kind".into(), Value::String("decision".into()));
+            "coordination.note.add"
+        }
+        ("coordination", "add_handoff") => {
+            args.insert("kind".into(), Value::String("handoff".into()));
+            "coordination.note.add"
+        }
         ("coordination", "add_note" | "note") => "coordination.note.add",
         ("agent_state", "update" | "clear") => {
             if action_name == "update" {
@@ -505,6 +516,44 @@ mod tests {
             args["ops"][1],
             json!({"op":"task.move","task_id":"T001","status":"active"})
         );
+    }
+
+    #[test]
+    fn coordination_decide_reuses_the_existing_tool_and_preserves_strict_fields() {
+        let args = json!({
+            "action":"decide","group_id":"g_test","actor_id":"web-lead","by":"web-lead",
+            "event_ids":["event-1","event-2"],"decision":"continue",
+            "summary":"Reviewed for the user","next_actor_id":"worker",
+            "next_title":"Verify","next_text":"Run the full regression"
+        })
+        .as_object()
+        .cloned()
+        .expect("args");
+        let (op, args) = daemon_call("cccc_coordination", args).expect("decision mapping");
+        assert_eq!(op, "coordination_decide");
+        assert!(!args.contains_key("action"));
+        assert_eq!(args["group_id"], "g_test");
+        assert_eq!(args["by"], "web-lead");
+        assert_eq!(args["event_ids"], json!(["event-1", "event-2"]));
+        assert_eq!(args["next_actor_id"], "worker");
+        assert_eq!(args["next_text"], "Run the full regression");
+    }
+
+    #[test]
+    fn documented_coordination_note_aliases_reuse_the_existing_context_operation() {
+        for (action, kind) in [("add_decision", "decision"), ("add_handoff", "handoff")] {
+            let args = json!({
+                "action":action,"group_id":"g_test","actor_id":"lead","by":"lead",
+                "summary":"Human-readable note","task_id":"T001"
+            })
+            .as_object()
+            .cloned()
+            .expect("args");
+            let (op, args) = daemon_call("cccc_coordination", args).expect("note alias");
+            assert_eq!(op, "context_sync");
+            assert_eq!(args["ops"][0]["op"], "coordination.note.add");
+            assert_eq!(args["ops"][0]["kind"], kind);
+        }
     }
 
     #[test]

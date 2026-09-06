@@ -64,6 +64,7 @@ async fn ensure_actor(state: &AppState, group_id: String, actor_id: String, even
         .info(super::web_model_browser::surface_key())
         .await;
     if surface["active"].as_bool().unwrap_or(false) {
+        ensure_relay_decision_reminder(state, &group_id, &actor_id).await;
         if event_trigger {
             super::web_model_delivery::ensure_worker(
                 state.clone(),
@@ -88,11 +89,31 @@ async fn ensure_actor(state: &AppState, group_id: String, actor_id: String, even
     {
         Ok(_) => {
             clear_warmup_attempt(&session_key);
+            ensure_relay_decision_reminder(state, &group_id, &actor_id).await;
             super::web_model_delivery::ensure_worker(state.clone(), group_id, actor_id).await;
         }
         Err(error) => {
             tracing::warn!(%error, group_id, actor_id, "Web-model browser warmup failed");
         }
+    }
+}
+
+async fn ensure_relay_decision_reminder(state: &AppState, group_id: &str, actor_id: &str) {
+    let browser_idle = {
+        let _operation = state.browser_surfaces.web_model_operation.lock().await;
+        state
+            .browser_surfaces
+            .relay_surface_idle(super::web_model_browser::surface_key())
+            .await
+            .unwrap_or(false)
+    };
+    let mut args = super::web_model_delivery_completion::args(group_id, actor_id);
+    args.insert("by".into(), serde_json::json!(actor_id));
+    args.insert("browser_idle".into(), serde_json::json!(browser_idle));
+    if let Err(error) =
+        super::web_model_delivery_completion::call(state, "coordination_relay_remind", args).await
+    {
+        tracing::warn!(%error, group_id, actor_id, "relay decision reminder check failed");
     }
 }
 

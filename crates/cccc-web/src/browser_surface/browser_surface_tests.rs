@@ -940,3 +940,52 @@ async fn submission_does_not_wait_for_background_intersection_observers() {
         "BACKGROUND_SUBMISSION: suspended visual observer, one verified send, duplicate observation does not resend"
     );
 }
+
+#[tokio::test]
+async fn relay_idle_probe_requires_an_empty_non_generating_composer() {
+    require_chrome!();
+    let (url, server) = local_page(
+        r#"<!doctype html><body><form><textarea id="prompt-textarea" placeholder="Message"></textarea><button type="button" aria-label="Send prompt">Send</button><button id="busy" type="button" aria-label="Stop streaming">Stop</button></form></body>"#,
+    )
+    .await;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manager = BrowserSurfaces::default();
+    manager
+        .open("relay-idle", &temp.path().join("profile"), &url, 800, 600)
+        .await
+        .expect("browser");
+    assert!(
+        !manager
+            .relay_surface_idle("relay-idle")
+            .await
+            .expect("busy probe")
+    );
+    let page = manager
+        .sessions
+        .lock()
+        .await
+        .get("relay-idle")
+        .expect("session")
+        .page
+        .clone();
+    page.evaluate("document.querySelector('#busy').remove();document.querySelector('textarea').value='HUMAN DRAFT'")
+        .await
+        .expect("draft fixture");
+    assert!(
+        !manager
+            .relay_surface_idle("relay-idle")
+            .await
+            .expect("draft probe")
+    );
+    page.evaluate("document.querySelector('textarea').value=''")
+        .await
+        .expect("clear fixture");
+    assert!(
+        manager
+            .relay_surface_idle("relay-idle")
+            .await
+            .expect("idle probe")
+    );
+    manager.close("relay-idle").await.expect("close browser");
+    server.abort();
+}

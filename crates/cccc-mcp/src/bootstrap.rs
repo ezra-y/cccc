@@ -67,6 +67,16 @@ pub(crate) async fn build(
         context_hygiene,
         memory_recall_gate,
     );
+    if !matches!(actor_id.as_str(), "user" | "system")
+        && let Ok(relay) = daemon(
+            client,
+            "coordination_relay_status",
+            request_args(&group_id, &actor_id),
+        )
+        .await
+    {
+        payload["relay_pending"] = Value::Object(relay);
+    }
     if let Ok(store) = cccc_core::GroupStore::new(home.clone())
         && let Ok(group) = store.load(&group_id)
         && let Ok(Some(pending)) = cccc_core::inbox::mail_pending_summary(home, &group, &actor_id)
@@ -425,14 +435,35 @@ fn recent_notes(coordination: Option<&Map<String, Value>>, key: &str) -> Value {
         .into_iter()
         .flatten()
         .filter_map(Value::as_object)
+        .rev()
         .take(2)
         .map(|item| {
-            Value::Object(clean_object(Map::from_iter([
+            let mut note = clean_object(Map::from_iter([
                 ("at".into(), item.get("at").cloned().unwrap_or(Value::Null)),
                 ("by".into(), trimmed_value(item.get("by"), 64)),
                 ("summary".into(), trimmed_value(item.get("summary"), 180)),
                 ("task_id".into(), trimmed_value(item.get("task_id"), 64)),
-            ])))
+            ]));
+            for field in [
+                "id",
+                "decision",
+                "status",
+                "source_event_ids",
+                "target_actor_id",
+                "next_actor_id",
+                "next_task_id",
+                "safe_to_idle",
+                "caller_may_idle",
+                "reason",
+                "responsibility",
+                "request_fingerprint",
+                "escalation_event_id",
+            ] {
+                if let Some(value) = item.get(field) {
+                    note.insert(field.into(), value.clone());
+                }
+            }
+            Value::Object(note)
         })
         .collect();
     Value::Array(notes)

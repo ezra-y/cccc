@@ -1,4 +1,4 @@
-use cccc_contracts::{Actor, ActorRole};
+use cccc_contracts::{Actor, ActorRole, ActorRuntime};
 use std::path::Path;
 
 use crate::actors::{effective_role, visible};
@@ -122,6 +122,12 @@ fn render_with_body(group: &GroupDoc, actor: &Actor, body: &str) -> String {
             .into(),
         "- Terminal output is not delivered.".into(),
     ]);
+    if role == "foreman" && actor.runtime == ActorRuntime::WebModel {
+        lines.push(
+            r#"- When a completed member handoff is present, keep the original report and your normal reply as the human-facing output. Use cccc_coordination(action="decide", ...) only to record machine responsibility; do not repeat the report in summary. Reading or replying alone is not acknowledgement; continue must create and send a concrete next task."#
+                .into(),
+        );
+    }
     if enabled.len() > 1 {
         lines.push(
             if role == "foreman" {
@@ -252,6 +258,26 @@ mod tests {
         let peer = group.actors.last().expect("peer");
         assert!(render(&group, peer).contains(crate::peer_insight::TEAM_MODE_SEED));
         assert!(!render(&group, peer).contains(crate::peer_insight::FOREMAN_TEAM_MODE_SEED));
+    }
+
+    #[test]
+    fn web_foreman_prompt_keeps_visible_output_original_and_records_machine_handoff() {
+        use cccc_contracts::ActorRuntime;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+        let store = GroupStore::new(home).expect("store");
+        let mut group = store.create("relay", "").expect("group");
+        let mut actor = Actor::new("web-lead");
+        actor.runtime = ActorRuntime::WebModel;
+        group.actors.push(actor.clone());
+        let prompt = render(&group, &actor);
+        assert!(prompt.contains(r#"cccc_coordination(action="decide""#));
+        assert!(
+            prompt.contains("original report and your normal reply as the human-facing output")
+        );
+        assert!(prompt.contains("do not repeat the report in summary"));
+        assert!(prompt.contains("Reading or replying alone is not acknowledgement"));
+        assert!(prompt.contains("concrete next task"));
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub(crate) mod codex_voice_controller;
 pub(crate) mod codex_voice_lifecycle;
 mod context;
 mod context_projection;
+mod coordination_relay;
 mod deepseek_runtime;
 mod diagnostics;
 mod group_bridge;
@@ -82,6 +83,7 @@ use crate::dispatch::{OpError, OpResult};
 
 pub fn handle(home: &HomeLayout, request: &DaemonRequest) -> Result<Option<OpResult>, OpError> {
     for handler in [
+        coordination_relay::handle,
         web_model_chat_onboarding::handle,
         group_creation::handle,
         groups::handle,

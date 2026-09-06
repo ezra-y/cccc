@@ -110,6 +110,14 @@ fn authorize(
     operations: &[Map<String, Value>],
     by: &str,
 ) -> Result<(), OpError> {
+    if operations.iter().any(|operation| {
+        operation.get("op").and_then(Value::as_str) == Some("coordination.relay.note")
+    }) {
+        return Err(OpError::new(
+            "permission_denied",
+            "coordination.relay.note is owned by the relay decision operation",
+        ));
+    }
     if by.is_empty() || matches!(by, "user" | "system") {
         return Ok(());
     }

@@ -71,10 +71,16 @@ pub(crate) async fn call_with_context(
         && let Some(result) =
             crate::remote_messages::try_send(home, client, arguments.clone()).await
     {
-        return result.map(|result| {
-            let (group_id, actor_id) = message_context.as_ref().expect("message context");
-            with_post_message_context(home, result, group_id, actor_id)
-        });
+        return match result {
+            Ok(result) => {
+                let (group_id, actor_id) = message_context.as_ref().expect("message context");
+                Ok(
+                    with_post_message_and_relay_context(home, client, result, group_id, actor_id)
+                        .await,
+                )
+            }
+            Err(error) => Err(error),
+        };
     }
     let payload = match name {
         "cccc_help" => {
@@ -94,7 +100,7 @@ pub(crate) async fn call_with_context(
             let result = crate::local_tools::call(home, client, name, arguments, context).await?;
             return Ok(if message_operation {
                 let (group_id, actor_id) = message_context.as_ref().expect("message context");
-                with_post_message_context(home, result, group_id, actor_id)
+                with_post_message_and_relay_context(home, client, result, group_id, actor_id).await
             } else {
                 result
             });
@@ -145,16 +151,63 @@ pub(crate) async fn call_with_context(
             if name == "cccc_actor_notes" {
                 postprocess_actor_notes(client, &mut result, &arguments).await;
             }
+            if exposes_relay_context(name, &arguments) {
+                attach_relay_context(client, &mut result, &arguments).await;
+            }
             Value::Object(result)
         }
     };
     let result = tool_result(payload);
     Ok(if message_operation {
         let (group_id, actor_id) = message_context.as_ref().expect("message context");
-        with_post_message_context(home, result, group_id, actor_id)
+        with_post_message_and_relay_context(home, client, result, group_id, actor_id).await
     } else {
         result
     })
+}
+
+fn exposes_relay_context(name: &str, arguments: &Map<String, Value>) -> bool {
+    matches!(
+        name,
+        "cccc_inbox_read" | "cccc_message_history" | "cccc_context_get"
+    ) || (name == "cccc_coordination"
+        && matches!(
+            arguments.get("action").and_then(Value::as_str),
+            None | Some("get" | "list")
+        ))
+}
+
+async fn attach_relay_context(
+    client: &DaemonClient,
+    result: &mut Map<String, Value>,
+    arguments: &Map<String, Value>,
+) {
+    let group_id = arguments
+        .get("group_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let actor_id = arguments
+        .get("by")
+        .or_else(|| arguments.get("actor_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if group_id.is_empty() || matches!(actor_id, "" | "user" | "system") {
+        return;
+    }
+    let mut args = Map::from_iter([
+        ("group_id".into(), Value::String(group_id.into())),
+        ("actor_id".into(), Value::String(actor_id.into())),
+        ("by".into(), Value::String(actor_id.into())),
+    ]);
+    if let Ok(relay) = daemon(
+        client,
+        "coordination_relay_status",
+        std::mem::take(&mut args),
+    )
+    .await
+    {
+        result.insert("relay_pending".into(), Value::Object(relay));
+    }
 }
 
 fn authorize_tool(
@@ -811,6 +864,37 @@ fn is_message_operation(name: &str, arguments: &Map<String, Value>) -> bool {
         name,
         "cccc_message_send" | "cccc_tracked_send" | "cccc_message_reply"
     ) || (name == "cccc_file" && arguments.get("action").and_then(Value::as_str) == Some("send"))
+}
+
+async fn with_post_message_and_relay_context(
+    home: &HomeLayout,
+    client: &DaemonClient,
+    result: Value,
+    group_id: &str,
+    actor_id: &str,
+) -> Value {
+    let mut result = with_post_message_context(home, result, group_id, actor_id);
+    let Some(payload) = result
+        .get_mut("structuredContent")
+        .and_then(Value::as_object_mut)
+    else {
+        return result;
+    };
+    if !group_id.is_empty() && !matches!(actor_id, "" | "user" | "system") {
+        let args = Map::from_iter([
+            ("group_id".into(), Value::String(group_id.into())),
+            ("actor_id".into(), Value::String(actor_id.into())),
+            ("by".into(), Value::String(actor_id.into())),
+        ]);
+        if let Ok(relay) = daemon(client, "coordination_relay_status", args).await {
+            payload.insert("relay_pending".into(), Value::Object(relay));
+        }
+    }
+    result["content"] = json!([{
+        "type":"text",
+        "text":serde_json::to_string_pretty(payload).unwrap_or_else(|_| "{}".into())
+    }]);
+    result
 }
 
 fn with_post_message_context(
