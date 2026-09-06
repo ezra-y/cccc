@@ -293,6 +293,6 @@
     "add": "Add member",
     "noLocalRuntime": "No available local runtime was detected. Install one first.",
     "confirmRuntimeChange": "Change “{{member}}” in “{{group}}” from {{previous}} to {{next}}?",
-    "webBindingRetired": "This member’s current web conversation binding will be retired. Other members and shared sign-in stay unchanged."
+    "webBindingRetired": "This member’s current web conversation binding will be retired. Other members and sign-in stay unchanged."
   }
 }

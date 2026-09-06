@@ -385,7 +385,7 @@ describe("group members shortcut", () => {
 
 describe("shared login, role, and confirmation ownership", () => {
   it.each([false, true])(
-    "gives the two main sections equal heading prominence and themes the native select (dark=%s)",
+    "places normal-size peer headings outside content cards and insets the native select arrow (dark=%s)",
     async (isDark) => {
       await render(<WebModelConnectorsTab isDark={isDark} currentGroupId="g_a" />);
       const shared = find("#t05-shared-login-heading");
@@ -393,11 +393,27 @@ describe("shared login, role, and confirmation ownership", () => {
       expect(shared.tagName).toBe("H4");
       expect(group.tagName).toBe(shared.tagName);
       expect(group.className).toBe(shared.className);
-      expect(shared.classList.contains("text-xl")).toBe(true);
-      expect(shared.classList.contains("sm:text-2xl")).toBe(true);
+      expect(shared.classList.contains("text-base")).toBe(true);
+      expect(shared.className).not.toMatch(/text-xl|text-2xl/);
+      expect(shared.closest("header")?.parentElement?.getAttribute("data-t05-change")).toBe(
+        "shared-browser",
+      );
+      const loginControls = find('[data-testid="account-login-controls"]');
+      expect(loginControls.contains(shared)).toBe(false);
+      const groupSection = group.closest("section")!;
+      expect(groupSection.className).not.toMatch(/rounded|border|bg-/);
+      expect(groupSection.contains(find('[data-testid="web-member-role"]'))).toBe(true);
+      expect(host.textContent).not.toMatch(/共享|共用/);
+      expect(host.textContent).toContain("登录一次，所有工作组都使用这个账号");
       const select = find("#t05-web-group") as HTMLSelectElement;
       expect(group.querySelector('label[for="t05-web-group"]')).not.toBeNull();
       expect(select.style.colorScheme).toBe(isDark ? "dark" : "light");
+      expect(select.style.appearance).toBe("none");
+      expect(select.style.paddingInlineEnd).toBe("3rem");
+      const arrow = find('[data-testid="web-group-chevron"]');
+      expect(arrow.getAttribute("aria-hidden")).toBe("true");
+      expect(arrow.classList.contains("pointer-events-none")).toBe(true);
+      expect(arrow.classList.contains("end-4")).toBe(true);
       await choose("g_b");
       expect(select.value).toBe("g_b");
       expect(find('[data-testid="shared-login-status"]').textContent).toBeTruthy();
@@ -409,12 +425,12 @@ describe("shared login, role, and confirmation ownership", () => {
   it("renders one shared login before group selection and keeps it usable with no groups", async () => {
     mocks.fetchGroups.mockResolvedValue(ok({ groups: [] }));
     await render();
-    const shared = find('[data-t05-review="shared-login"]');
+    const shared = find('[data-t05-change="shared-browser"]');
     const selector = find('[data-t05-change="web-group-selector"]');
     expect(
       shared.compareDocumentPosition(selector) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    expect(shared.textContent).toContain("所有工作组共用");
+    expect(shared.textContent).toContain("登录一次，所有工作组都使用这个账号");
     await click('[data-t05-change="open-shared-browser"]');
     expect(mocks.sharedWebModelBrowser).toHaveBeenCalledWith("open", {
       width: 1366,

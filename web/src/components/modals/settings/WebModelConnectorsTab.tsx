@@ -17,6 +17,7 @@ import {
 } from "../../../utils/webModelSelection";
 import { webModelConnectorMcpUrl } from "../../../utils/webModelConnector";
 import { ProjectedBrowserSurfacePanel } from "../../browser/ProjectedBrowserSurfacePanel";
+import { ChevronDownIcon } from "../../Icons";
 import {
   dangerButtonClass,
   inputClass,
@@ -984,658 +985,681 @@ export default function WebModelConnectorsTab({
 
         <section
           data-t05-change="shared-browser"
-          data-t05-review="shared-login"
           aria-labelledby="t05-shared-login-heading"
-          className={settingsWorkspacePanelClass(isDark)}
+          className="space-y-3"
         >
-          <h4
-            id="t05-shared-login-heading"
-            className="mb-3 text-xl font-semibold leading-7 tracking-tight text-[var(--color-text-primary)] sm:text-2xl sm:leading-8"
-          >
-            {wm("t05.sharedTitle")}
-          </h4>
-          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
-            {wm("t05.sharedLoginNote")}
-          </p>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span data-testid="shared-login-status" className="mr-auto text-sm">
-              {sharedError ? wm("t05.sharedUnavailable") : browserStatusLabel}
-            </span>
-            <button
-              type="button"
-              data-t05-change="open-shared-browser"
-              disabled={sharedBusy}
-              onClick={() => void openBrowserLogin()}
-              className={primaryButtonClass(sharedBusy)}
+          <header className="space-y-2">
+            <h4
+              id="t05-shared-login-heading"
+              data-t05-review="shared-login"
+              className="inline-block text-base font-semibold leading-6 text-[var(--color-text-primary)]"
             >
-              {wm("buttons.openChatGpt")}
-            </button>
-            <button
-              type="button"
-              data-t05-change="preview-toggle"
-              onClick={() => setShowBrowserSurface((v) => !v)}
-              className={secondaryButtonClass("sm")}
-            >
-              {showBrowserSurface ? wm("t05.hide") : wm("t05.view")}
-            </button>
-            <button
-              type="button"
-              disabled={sharedBusy}
-              onClick={() => void checkBrowserSessionStatus()}
-              className={secondaryButtonClass("sm")}
-            >
-              {wm("buttons.checkStatus")}
-            </button>
-          </div>
-          <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-            {wm("t05.sharedBrowser")}
-          </p>
-          {sharedError && (
-            <p role="alert" className="mt-2 text-sm text-rose-600 dark:text-rose-300">
-              {sharedError}
+              {wm("t05.sharedTitle")}
+            </h4>
+            <p className="text-sm leading-6 text-[var(--color-text-secondary)]">
+              {wm("t05.sharedLoginNote")}
             </p>
-          )}
-          {showBrowserSurface && (
-            <div className="mt-3">
-              <div className="mb-2 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  data-t05-change="restart-shared-browser"
-                  disabled={sharedBusy}
-                  onClick={() => void reloadEmbeddedBrowser()}
-                  className={secondaryButtonClass("sm")}
-                >
-                  {wm("buttons.reloadChatGpt")}
-                </button>
-                <button
-                  type="button"
-                  data-t05-change="close-shared-browser"
-                  disabled={sharedBusy}
-                  onClick={() => void closeBrowserSession()}
-                  className={secondaryButtonClass("sm")}
-                >
-                  {wm("buttons.closeBrowser")}
-                </button>
-              </div>
-              <ProjectedBrowserSurfacePanel
-                key={`shared-chatgpt:${browserSurfaceRestartNonce}`}
-                isDark={isDark}
-                refreshNonce={browserSurfaceRefreshNonce}
-                defaultViewerMode="browser"
-                viewportClassName="h-[60vh] min-h-[350px] max-h-[700px]"
-                loadSession={loadBrowserSurfaceSession}
-                webSocketUrl={api.getSharedWebModelBrowserWebSocketUrl()}
-                fallbackUrl="https://chatgpt.com/"
-                labels={{
-                  starting: wm("browserSurface.starting"),
-                  waiting: wm("browserSurface.waiting"),
-                  ready: wm("browserSurface.ready"),
-                  failed: wm("browserSurface.failed"),
-                  closed: wm("browserSurface.closed"),
-                  reconnecting: wm("browserSurface.reconnecting"),
-                  reconnect: wm("browserSurface.reconnect"),
-                  frameAlt: wm("browserSurface.frameAlt"),
-                }}
-              />
+          </header>
+          <div data-testid="account-login-controls" className={settingsWorkspacePanelClass(isDark)}>
+            <div className="flex flex-wrap items-center gap-2">
+              <span data-testid="shared-login-status" className="mr-auto text-sm">
+                {sharedError ? wm("t05.sharedUnavailable") : browserStatusLabel}
+              </span>
+              <button
+                type="button"
+                data-t05-change="open-shared-browser"
+                disabled={sharedBusy}
+                onClick={() => void openBrowserLogin()}
+                className={primaryButtonClass(sharedBusy)}
+              >
+                {wm("buttons.openChatGpt")}
+              </button>
+              <button
+                type="button"
+                data-t05-change="preview-toggle"
+                onClick={() => setShowBrowserSurface((v) => !v)}
+                className={secondaryButtonClass("sm")}
+              >
+                {showBrowserSurface ? wm("t05.hide") : wm("t05.view")}
+              </button>
+              <button
+                type="button"
+                disabled={sharedBusy}
+                onClick={() => void checkBrowserSessionStatus()}
+                className={secondaryButtonClass("sm")}
+              >
+                {wm("buttons.checkStatus")}
+              </button>
             </div>
-          )}
+            <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+              {wm("t05.sharedBrowser")}
+            </p>
+            {sharedError && (
+              <p role="alert" className="mt-2 text-sm text-rose-600 dark:text-rose-300">
+                {sharedError}
+              </p>
+            )}
+            {showBrowserSurface && (
+              <div className="mt-3">
+                <div className="mb-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    data-t05-change="restart-shared-browser"
+                    disabled={sharedBusy}
+                    onClick={() => void reloadEmbeddedBrowser()}
+                    className={secondaryButtonClass("sm")}
+                  >
+                    {wm("buttons.reloadChatGpt")}
+                  </button>
+                  <button
+                    type="button"
+                    data-t05-change="close-shared-browser"
+                    disabled={sharedBusy}
+                    onClick={() => void closeBrowserSession()}
+                    className={secondaryButtonClass("sm")}
+                  >
+                    {wm("buttons.closeBrowser")}
+                  </button>
+                </div>
+                <ProjectedBrowserSurfacePanel
+                  key={`shared-chatgpt:${browserSurfaceRestartNonce}`}
+                  isDark={isDark}
+                  refreshNonce={browserSurfaceRefreshNonce}
+                  defaultViewerMode="browser"
+                  viewportClassName="h-[60vh] min-h-[350px] max-h-[700px]"
+                  loadSession={loadBrowserSurfaceSession}
+                  webSocketUrl={api.getSharedWebModelBrowserWebSocketUrl()}
+                  fallbackUrl="https://chatgpt.com/"
+                  labels={{
+                    starting: wm("browserSurface.starting"),
+                    waiting: wm("browserSurface.waiting"),
+                    ready: wm("browserSurface.ready"),
+                    failed: wm("browserSurface.failed"),
+                    closed: wm("browserSurface.closed"),
+                    reconnecting: wm("browserSurface.reconnecting"),
+                    reconnect: wm("browserSurface.reconnect"),
+                    frameAlt: wm("browserSurface.frameAlt"),
+                  }}
+                />
+              </div>
+            )}
+          </div>
         </section>
 
         <section
           data-t05-change="web-group-selector"
-          data-t05-review="group-selector"
           aria-labelledby="t05-web-group-heading"
-          className={`${settingsWorkspacePanelClass(isDark)} !mt-8 sm:!mt-10 space-y-3`}
+          className="!mt-8 space-y-4"
         >
-          <h4
-            id="t05-web-group-heading"
-            className="mb-3 text-xl font-semibold leading-7 tracking-tight text-[var(--color-text-primary)] sm:text-2xl sm:leading-8"
-          >
-            <label htmlFor="t05-web-group">{wm("t05.selectGroup")}</label>
-          </h4>
-          <select
-            id="t05-web-group"
-            style={{ colorScheme: isDark ? "dark" : "light" }}
-            value={groupId}
-            onChange={(event) => {
-              if (
-                targetDraftDirty &&
-                targetDraftTouched &&
-                !window.confirm(wm("t05.confirmDiscard"))
-              )
-                return;
-              selectGroup(event.target.value);
-            }}
-            className={inputClass(isDark)}
-          >
-            {!groupId && <option value="">{wm("t05.selectGroup")}</option>}
-            {groups.map((group) => (
-              <option key={group.group_id} value={group.group_id}>
-                {group.title || group.group_id}
-              </option>
-            ))}
-          </select>
-          <p className="text-xs text-[var(--color-text-tertiary)]">{wm("t05.groupScope")}</p>
-        </section>
-
-        <section className={settingsWorkspacePanelClass(isDark)}>
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="text-sm font-semibold text-[var(--color-text-primary)]">
-                  {wm("summary.title")}
-                </div>
-                <span
-                  className={[
-                    "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
-                    setupPillClass(runtimeStatus.tone),
-                  ].join(" ")}
-                >
-                  {runtimeStatus.label}
-                </span>
-                {queuedCount > 0 ? (
-                  <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-200">
-                    {wm("queue.queued", { count: queuedCount })}
-                  </span>
-                ) : null}
-              </div>
-              <div className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
-                {wm("next.prefix", { action: nextSetupAction })}
-              </div>
-            </div>
-          </div>
-          {extraChatGptActors.length ? (
-            <div className="mt-3 text-xs leading-5 text-amber-700 dark:text-amber-300">
-              {wm("actorSection.multipleWarning")}
-            </div>
-          ) : null}
-        </section>
-
-        {!selectedActor ? (
-          <section className={settingsWorkspacePanelClass(isDark)}>
-            <div className="text-sm font-semibold text-[var(--color-text-primary)]">
-              {wm("empty.title")}
-            </div>
-            <p className="mt-1 text-sm leading-6 text-[var(--color-text-tertiary)]">
-              {wm("t05.emptyGroup")}
+          <header className="space-y-2">
+            <h4
+              id="t05-web-group-heading"
+              data-t05-review="group-selector"
+              className="inline-block text-base font-semibold leading-6 text-[var(--color-text-primary)]"
+            >
+              <label htmlFor="t05-web-group">{wm("t05.selectGroup")}</label>
+            </h4>
+            <p className="text-sm leading-6 text-[var(--color-text-secondary)]">
+              {wm("t05.groupScope")}
             </p>
-          </section>
-        ) : null}
+          </header>
+          <div className="relative">
+            <select
+              id="t05-web-group"
+              style={{
+                colorScheme: isDark ? "dark" : "light",
+                appearance: "none",
+                paddingInlineEnd: "3rem",
+              }}
+              value={groupId}
+              onChange={(event) => {
+                if (
+                  targetDraftDirty &&
+                  targetDraftTouched &&
+                  !window.confirm(wm("t05.confirmDiscard"))
+                )
+                  return;
+                selectGroup(event.target.value);
+              }}
+              className={inputClass(isDark)}
+            >
+              {!groupId && <option value="">{wm("t05.selectGroup")}</option>}
+              {groups.map((group) => (
+                <option key={group.group_id} value={group.group_id}>
+                  {group.title || group.group_id}
+                </option>
+              ))}
+            </select>
+            <ChevronDownIcon
+              data-testid="web-group-chevron"
+              aria-hidden="true"
+              className="pointer-events-none absolute end-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-secondary)]"
+            />
+          </div>
 
-        {selectedActor ? (
           <section className={settingsWorkspacePanelClass(isDark)}>
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0">
-                <div className="text-sm font-semibold text-[var(--color-text-primary)]">
-                  {wm("chatSetup.title", { actor: selectedActorLabel || actorId })}
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="text-sm font-semibold text-[var(--color-text-primary)]">
+                    {wm("summary.title")}
+                  </div>
+                  <span
+                    className={[
+                      "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
+                      setupPillClass(runtimeStatus.tone),
+                    ].join(" ")}
+                  >
+                    {runtimeStatus.label}
+                  </span>
+                  {queuedCount > 0 ? (
+                    <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-200">
+                      {wm("queue.queued", { count: queuedCount })}
+                    </span>
+                  ) : null}
                 </div>
-                <p className="mt-1 text-sm leading-6 text-[var(--color-text-tertiary)]">
-                  {wm("chatSetup.description")}
-                </p>
-              </div>
-              <div className="flex shrink-0 flex-wrap items-start gap-2 sm:justify-end">
-                <span
-                  className={[
-                    "inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold",
-                    setupPillClass(runtimeStatus.tone),
-                  ].join(" ")}
-                >
-                  {runtimeStatus.label}
-                </span>
+                <div className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
+                  {wm("next.prefix", { action: nextSetupAction })}
+                </div>
               </div>
             </div>
+            {extraChatGptActors.length ? (
+              <div className="mt-3 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                {wm("actorSection.multipleWarning")}
+              </div>
+            ) : null}
+          </section>
 
-            <p
-              data-testid="web-member-role"
-              className="mt-2 text-sm text-[var(--color-text-secondary)]"
-            >
-              {wm("t05.currentMember", {
-                member: selectedActorLabel || actorId,
-                role: wm(selectedActor.role === "foreman" ? "t05.roleForeman" : "t05.rolePeer"),
-              })}
-            </p>
-            <div className="mt-4 space-y-4">
-              <SetupSection
-                review="chat-binding"
-                title={<span data-t05-change="chat-binding">{wm("t05.identity")}</span>}
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span data-t05-change="binding-status">
-                    {sessionBound ? wm("t05.bound") : wm("t05.unbound")}
-                  </span>
-                  <button
-                    type="button"
-                    data-t05-change="copy-binding"
-                    disabled={bindingBusy || createBusy}
-                    onClick={() => void copyBinding()}
-                    className={secondaryButtonClass("sm")}
+          {!selectedActor ? (
+            <section className={settingsWorkspacePanelClass(isDark)}>
+              <div className="text-sm font-semibold text-[var(--color-text-primary)]">
+                {wm("empty.title")}
+              </div>
+              <p className="mt-1 text-sm leading-6 text-[var(--color-text-tertiary)]">
+                {wm("t05.emptyGroup")}
+              </p>
+            </section>
+          ) : null}
+
+          {selectedActor ? (
+            <section className={settingsWorkspacePanelClass(isDark)}>
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-[var(--color-text-primary)]">
+                    {wm("chatSetup.title", { actor: selectedActorLabel || actorId })}
+                  </div>
+                  <p className="mt-1 text-sm leading-6 text-[var(--color-text-tertiary)]">
+                    {wm("chatSetup.description")}
+                  </p>
+                </div>
+                <div className="flex shrink-0 flex-wrap items-start gap-2 sm:justify-end">
+                  <span
+                    className={[
+                      "inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold",
+                      setupPillClass(runtimeStatus.tone),
+                    ].join(" ")}
                   >
-                    {wm("t05.copy")}
-                  </button>
-                  {sessionBound && selectedConnector && (
+                    {runtimeStatus.label}
+                  </span>
+                </div>
+              </div>
+
+              <p
+                data-testid="web-member-role"
+                className="mt-2 text-sm text-[var(--color-text-secondary)]"
+              >
+                {wm("t05.currentMember", {
+                  member: selectedActorLabel || actorId,
+                  role: wm(selectedActor.role === "foreman" ? "t05.roleForeman" : "t05.rolePeer"),
+                })}
+              </p>
+              <div className="mt-4 space-y-4">
+                <SetupSection
+                  review="chat-binding"
+                  title={<span data-t05-change="chat-binding">{wm("t05.identity")}</span>}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span data-t05-change="binding-status">
+                      {sessionBound ? wm("t05.bound") : wm("t05.unbound")}
+                    </span>
                     <button
                       type="button"
-                      data-t05-change="disconnect-chat"
-                      disabled={Boolean(revokeBusyId)}
-                      onClick={() => void revokeConnector(selectedConnector.connector_id)}
+                      data-t05-change="copy-binding"
+                      disabled={bindingBusy || createBusy}
+                      onClick={() => void copyBinding()}
                       className={secondaryButtonClass("sm")}
                     >
-                      {wm("t05.disconnect")}
+                      {wm("t05.copy")}
                     </button>
-                  )}
-                </div>
-                <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-                  {wm("t05.identityNote")}
-                </p>
-              </SetupSection>
-              <details data-t05-change="legacy-setup">
-                <summary
-                  data-t05-review="legacy-fold"
-                  className="cursor-pointer text-sm rounded-md"
-                >
-                  {wm("t05.original")}
-                </summary>
-                {!webAccessReady ? (
-                  <div className="mt-4 flex flex-col gap-3 border-t border-[var(--glass-border-subtle)] pt-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium text-[var(--color-text-primary)]">
-                        {wm("summary.webAccess")}
-                      </div>
-                      <div className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
-                        {webAccessPrerequisiteLabel}
-                      </div>
-                    </div>
-                    {onOpenWebAccess ? (
+                    {sessionBound && selectedConnector && (
                       <button
                         type="button"
-                        onClick={onOpenWebAccess}
-                        className={`${secondaryButtonClass("sm")} shrink-0`}
+                        data-t05-change="disconnect-chat"
+                        disabled={Boolean(revokeBusyId)}
+                        onClick={() => void revokeConnector(selectedConnector.connector_id)}
+                        className={secondaryButtonClass("sm")}
                       >
-                        {wm("buttons.openWebAccess")}
+                        {wm("t05.disconnect")}
                       </button>
-                    ) : null}
+                    )}
                   </div>
-                ) : null}
-                <SetupSection title={wm("chatSetup.mcpAppTitle")}>
-                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                    <div className="min-w-0">
+                  <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+                    {wm("t05.identityNote")}
+                  </p>
+                </SetupSection>
+                <details data-t05-change="legacy-setup">
+                  <summary
+                    data-t05-review="legacy-fold"
+                    className="cursor-pointer text-sm rounded-md"
+                  >
+                    {wm("t05.original")}
+                  </summary>
+                  {!webAccessReady ? (
+                    <div className="mt-4 flex flex-col gap-3 border-t border-[var(--glass-border-subtle)] pt-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium text-[var(--color-text-primary)]">
+                          {wm("summary.webAccess")}
+                        </div>
+                        <div className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
+                          {webAccessPrerequisiteLabel}
+                        </div>
+                      </div>
+                      {onOpenWebAccess ? (
+                        <button
+                          type="button"
+                          onClick={onOpenWebAccess}
+                          className={`${secondaryButtonClass("sm")} shrink-0`}
+                        >
+                          {wm("buttons.openWebAccess")}
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <SetupSection title={wm("chatSetup.mcpAppTitle")}>
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span
+                            className={[
+                              "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
+                              setupPillClass(mcpStatusTone),
+                            ].join(" ")}
+                          >
+                            {mcpStatusLabel}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
+                          {mcpInstructionDetail}
+                        </p>
+                        {!chatGptSeen ? (
+                          <>
+                            <ol className="mt-3 list-decimal space-y-1 pl-4 text-xs leading-5 text-[var(--color-text-tertiary)]">
+                              <li>{wm("mcp.instructionOpenSettings")}</li>
+                              <li>{wm("mcp.instructionCreateApp")}</li>
+                              <li>{wm("mcp.instructionEnableConnector")}</li>
+                            </ol>
+                            <div className="mt-3 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
+                              <span>{wm("mcp.permissionHint")}</span>
+                              <a
+                                href="https://help.openai.com/en/articles/11487775-apps-in-chatgpt"
+                                target="_blank"
+                                rel="noreferrer"
+                                className="ml-2 font-semibold underline-offset-2 hover:underline"
+                              >
+                                {wm("mcp.permissionDocsLink")}
+                              </a>
+                            </div>
+                          </>
+                        ) : null}
+                        {selectedConnector && !selectedMcpUrl ? (
+                          <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                            {wm("warnings.rotateOldConnector")}
+                          </div>
+                        ) : null}
+                        {mcpUrlLocalWarning ? (
+                          <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                            {wm("warnings.localMcpUrl")}
+                          </div>
+                        ) : null}
+                        {mcpUrlHttpsWarning && !mcpUrlLocalWarning ? (
+                          <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                            {wm("warnings.nonHttpsMcpUrl")}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                        {selectedMcpUrl ? (
+                          <button
+                            type="button"
+                            onClick={() => void copyValue(selectedMcpUrl, wm("copyLabels.mcpUrl"))}
+                            className={
+                              chatGptSeen ? secondaryButtonClass("sm") : primaryButtonClass(false)
+                            }
+                          >
+                            {wm("buttons.copyMcpUrl")}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void createConnector(actorId)}
+                            disabled={createBusy || !groupId || !actorId || !webAccessReady}
+                            className={primaryButtonClass(createBusy)}
+                          >
+                            {selectedConnector
+                              ? wm("buttons.rotateMcpUrl")
+                              : wm("buttons.createMcpUrl")}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </SetupSection>
+                </details>
+
+                <SetupSection
+                  title={
+                    <span data-t05-change="group-return-target">
+                      {wm("chatSetup.deliveryTargetTitle")}
+                    </span>
+                  }
+                >
+                  <div className="grid gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+                    <div className="rounded-lg border border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] px-3 py-3">
                       <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--color-text-muted)]">
+                          {wm("target.savedTarget")}
+                        </div>
                         <span
                           className={[
                             "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
-                            setupPillClass(mcpStatusTone),
+                            setupPillClass(savedTargetTone),
                           ].join(" ")}
                         >
-                          {mcpStatusLabel}
+                          {savedTargetLabel}
                         </span>
                       </div>
-                      <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
-                        {mcpInstructionDetail}
-                      </p>
-                      {!chatGptSeen ? (
-                        <>
-                          <ol className="mt-3 list-decimal space-y-1 pl-4 text-xs leading-5 text-[var(--color-text-tertiary)]">
-                            <li>{wm("mcp.instructionOpenSettings")}</li>
-                            <li>{wm("mcp.instructionCreateApp")}</li>
-                            <li>{wm("mcp.instructionEnableConnector")}</li>
-                          </ol>
-                          <div className="mt-3 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
-                            <span>{wm("mcp.permissionHint")}</span>
-                            <a
-                              href="https://help.openai.com/en/articles/11487775-apps-in-chatgpt"
-                              target="_blank"
-                              rel="noreferrer"
-                              className="ml-2 font-semibold underline-offset-2 hover:underline"
-                            >
-                              {wm("mcp.permissionDocsLink")}
-                            </a>
-                          </div>
-                        </>
-                      ) : null}
-                      {selectedConnector && !selectedMcpUrl ? (
-                        <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                          {wm("warnings.rotateOldConnector")}
-                        </div>
-                      ) : null}
-                      {mcpUrlLocalWarning ? (
-                        <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                          {wm("warnings.localMcpUrl")}
-                        </div>
-                      ) : null}
-                      {mcpUrlHttpsWarning && !mcpUrlLocalWarning ? (
-                        <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                          {wm("warnings.nonHttpsMcpUrl")}
-                        </div>
-                      ) : null}
+                      <div className="mt-2 break-all text-sm leading-6 text-[var(--color-text-secondary)]">
+                        {savedTargetDetail}
+                      </div>
+                      <div className="mt-2 text-xs leading-5 text-[var(--color-text-tertiary)]">
+                        {deliveryTargetSavedAt
+                          ? wm("target.savedAt", { time: formatTime(deliveryTargetSavedAt) })
+                          : wm("target.notSavedYet")}
+                      </div>
+                      <div className="mt-3 rounded-md border border-[var(--glass-border-subtle)] bg-[var(--glass-panel-bg)] px-3 py-2 text-xs leading-5 text-[var(--color-text-secondary)]">
+                        <span className="font-semibold text-[var(--color-text-primary)]">
+                          {wm("target.nextDelivery")}
+                        </span>
+                        <span className="ml-2">{nextDeliveryDetail}</span>
+                      </div>
                     </div>
-                    <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
-                      {selectedMcpUrl ? (
-                        <button
-                          type="button"
-                          onClick={() => void copyValue(selectedMcpUrl, wm("copyLabels.mcpUrl"))}
-                          className={
-                            chatGptSeen ? secondaryButtonClass("sm") : primaryButtonClass(false)
-                          }
-                        >
-                          {wm("buttons.copyMcpUrl")}
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => void createConnector(actorId)}
-                          disabled={createBusy || !groupId || !actorId || !webAccessReady}
-                          className={primaryButtonClass(createBusy)}
-                        >
-                          {selectedConnector
-                            ? wm("buttons.rotateMcpUrl")
-                            : wm("buttons.createMcpUrl")}
-                        </button>
-                      )}
+
+                    <div className="rounded-lg border border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] px-3 py-3">
+                      <div className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--color-text-muted)]">
+                        {wm("target.currentBrowserTab")}
+                      </div>
+                      <div className="mt-2 break-all text-sm leading-6 text-[var(--color-text-secondary)]">
+                        {currentBrowserDetail}
+                      </div>
+                      {boundConversationUrl &&
+                      currentBrowserUrl &&
+                      currentBrowserUrl !== boundConversationUrl ? (
+                        <div className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">
+                          {wm("target.currentTabNotTarget")}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
-                </SetupSection>
-              </details>
 
-              <SetupSection
-                title={
-                  <span data-t05-change="group-return-target">
-                    {wm("chatSetup.deliveryTargetTitle")}
-                  </span>
-                }
-              >
-                <div className="grid gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-                  <div className="rounded-lg border border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] px-3 py-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--color-text-muted)]">
-                        {wm("target.savedTarget")}
+                  <div className="mt-3 rounded-lg border border-[var(--glass-border-subtle)] bg-[var(--glass-panel-bg)] px-3 py-3">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <div className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--color-text-muted)]">
+                          {wm("target.changeTarget")}
+                        </div>
+                        <div className="mt-1 text-sm leading-6 text-[var(--color-text-secondary)]">
+                          {targetDraftDirty
+                            ? wm("target.unsavedChanges")
+                            : wm("target.noUnsavedChanges")}
+                        </div>
                       </div>
-                      <span
-                        className={[
-                          "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
-                          setupPillClass(savedTargetTone),
-                        ].join(" ")}
+                      <button
+                        type="button"
+                        data-t05-change="save-return-target"
+                        data-t05-review="confirmed-target-save"
+                        onClick={() => void saveDeliveryTarget()}
+                        disabled={targetSaveDisabled}
+                        className={
+                          targetDraftDirty
+                            ? primaryButtonClass(browserBusy)
+                            : secondaryButtonClass("sm")
+                        }
                       >
-                        {savedTargetLabel}
-                      </span>
+                        {wm("buttons.saveTarget")}
+                      </button>
                     </div>
-                    <div className="mt-2 break-all text-sm leading-6 text-[var(--color-text-secondary)]">
-                      {savedTargetDetail}
-                    </div>
-                    <div className="mt-2 text-xs leading-5 text-[var(--color-text-tertiary)]">
-                      {deliveryTargetSavedAt
-                        ? wm("target.savedAt", { time: formatTime(deliveryTargetSavedAt) })
-                        : wm("target.notSavedYet")}
-                    </div>
-                    <div className="mt-3 rounded-md border border-[var(--glass-border-subtle)] bg-[var(--glass-panel-bg)] px-3 py-2 text-xs leading-5 text-[var(--color-text-secondary)]">
-                      <span className="font-semibold text-[var(--color-text-primary)]">
-                        {wm("target.nextDelivery")}
-                      </span>
-                      <span className="ml-2">{nextDeliveryDetail}</span>
-                    </div>
-                  </div>
 
-                  <div className="rounded-lg border border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] px-3 py-3">
-                    <div className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--color-text-muted)]">
-                      {wm("target.currentBrowserTab")}
-                    </div>
-                    <div className="mt-2 break-all text-sm leading-6 text-[var(--color-text-secondary)]">
-                      {currentBrowserDetail}
-                    </div>
-                    {boundConversationUrl &&
-                    currentBrowserUrl &&
-                    currentBrowserUrl !== boundConversationUrl ? (
-                      <div className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">
-                        {wm("target.currentTabNotTarget")}
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-
-                <div className="mt-3 rounded-lg border border-[var(--glass-border-subtle)] bg-[var(--glass-panel-bg)] px-3 py-3">
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                      <div className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--color-text-muted)]">
-                        {wm("target.changeTarget")}
-                      </div>
-                      <div className="mt-1 text-sm leading-6 text-[var(--color-text-secondary)]">
-                        {targetDraftDirty
-                          ? wm("target.unsavedChanges")
-                          : wm("target.noUnsavedChanges")}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      data-t05-change="save-return-target"
-                      data-t05-review="confirmed-target-save"
-                      onClick={() => void saveDeliveryTarget()}
-                      disabled={targetSaveDisabled}
-                      className={
-                        targetDraftDirty
-                          ? primaryButtonClass(browserBusy)
-                          : secondaryButtonClass("sm")
-                      }
-                    >
-                      {wm("buttons.saveTarget")}
-                    </button>
-                  </div>
-
-                  <fieldset className="mt-3 space-y-3">
-                    <legend className="sr-only">{wm("target.changeTarget")}</legend>
-                    <label className={targetRadioClass("existing")}>
-                      <input
-                        type="radio"
-                        name="chatgpt-delivery-target"
-                        checked={targetDraftMode === "existing"}
-                        onChange={() => chooseTargetMode("existing")}
-                        className="mt-0.5 h-4 w-4 shrink-0 accent-[rgb(35,36,37)] dark:accent-white"
-                      />
-                      <span className="min-w-0">
-                        <span className="block font-semibold">{wm("target.optionExisting")}</span>
-                        <span className="mt-0.5 block text-xs leading-5 text-[var(--color-text-tertiary)]">
-                          {wm("target.optionExistingDetail")}
+                    <fieldset className="mt-3 space-y-3">
+                      <legend className="sr-only">{wm("target.changeTarget")}</legend>
+                      <label className={targetRadioClass("existing")}>
+                        <input
+                          type="radio"
+                          name="chatgpt-delivery-target"
+                          checked={targetDraftMode === "existing"}
+                          onChange={() => chooseTargetMode("existing")}
+                          className="mt-0.5 h-4 w-4 shrink-0 accent-[rgb(35,36,37)] dark:accent-white"
+                        />
+                        <span className="min-w-0">
+                          <span className="block font-semibold">{wm("target.optionExisting")}</span>
+                          <span className="mt-0.5 block text-xs leading-5 text-[var(--color-text-tertiary)]">
+                            {wm("target.optionExistingDetail")}
+                          </span>
                         </span>
-                      </span>
-                    </label>
+                      </label>
 
-                    {targetDraftMode === "existing" ? (
-                      <div className="ml-6 space-y-2 border-l border-[var(--glass-border-subtle)] pl-3">
-                        <label className="block">
-                          <span className={labelClass(isDark)}>{wm("target.conversationUrl")}</span>
-                          <div className="mt-1 flex flex-col gap-2 sm:flex-row">
-                            <input
-                              value={conversationUrlDraft}
-                              onFocus={() => {
-                                setTargetDraftMode("existing");
-                                setTargetDraftTouched(true);
-                              }}
-                              onChange={(event) => {
-                                setTargetDraftMode("existing");
-                                setConversationUrlDraft(event.target.value);
-                                setTargetDraftTouched(true);
-                              }}
-                              placeholder="https://chatgpt.com/c/..."
-                              className={inputClass(isDark)}
-                            />
-                            {targetUseCurrentAvailable ? (
-                              <button
-                                type="button"
-                                onClick={() => {
+                      {targetDraftMode === "existing" ? (
+                        <div className="ml-6 space-y-2 border-l border-[var(--glass-border-subtle)] pl-3">
+                          <label className="block">
+                            <span className={labelClass(isDark)}>
+                              {wm("target.conversationUrl")}
+                            </span>
+                            <div className="mt-1 flex flex-col gap-2 sm:flex-row">
+                              <input
+                                value={conversationUrlDraft}
+                                onFocus={() => {
                                   setTargetDraftMode("existing");
-                                  setConversationUrlDraft(currentBrowserConversationUrl);
                                   setTargetDraftTouched(true);
                                 }}
-                                className={secondaryButtonClass("sm")}
-                              >
-                                {wm("buttons.useCurrentTab")}
-                              </button>
-                            ) : null}
+                                onChange={(event) => {
+                                  setTargetDraftMode("existing");
+                                  setConversationUrlDraft(event.target.value);
+                                  setTargetDraftTouched(true);
+                                }}
+                                placeholder="https://chatgpt.com/c/..."
+                                className={inputClass(isDark)}
+                              />
+                              {targetUseCurrentAvailable ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setTargetDraftMode("existing");
+                                    setConversationUrlDraft(currentBrowserConversationUrl);
+                                    setTargetDraftTouched(true);
+                                  }}
+                                  className={secondaryButtonClass("sm")}
+                                >
+                                  {wm("buttons.useCurrentTab")}
+                                </button>
+                              ) : null}
+                            </div>
+                          </label>
+                          <div className="text-xs leading-5 text-[var(--color-text-tertiary)]">
+                            {currentBrowserConversationUrl
+                              ? wm("target.currentTab", {
+                                  target: shortConversationLabel(currentBrowserConversationUrl),
+                                })
+                              : wm("target.currentTabUnavailable")}
                           </div>
-                        </label>
-                        <div className="text-xs leading-5 text-[var(--color-text-tertiary)]">
-                          {currentBrowserConversationUrl
-                            ? wm("target.currentTab", {
-                                target: shortConversationLabel(currentBrowserConversationUrl),
-                              })
-                            : wm("target.currentTabUnavailable")}
                         </div>
+                      ) : null}
+
+                      <label className={targetRadioClass("new")}>
+                        <input
+                          type="radio"
+                          name="chatgpt-delivery-target"
+                          checked={targetDraftMode === "new"}
+                          onChange={() => chooseTargetMode("new")}
+                          className="mt-0.5 h-4 w-4 shrink-0 accent-[rgb(35,36,37)] dark:accent-white"
+                        />
+                        <span className="min-w-0">
+                          <span className="block font-semibold">{wm("target.optionNew")}</span>
+                          <span className="mt-0.5 block text-xs leading-5 text-[var(--color-text-tertiary)]">
+                            {wm("target.optionNewDetail")}
+                          </span>
+                        </span>
+                      </label>
+                    </fieldset>
+                    {targetDraftError ? (
+                      <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                        {targetDraftError}
                       </div>
                     ) : null}
+                  </div>
+                </SetupSection>
 
-                    <label className={targetRadioClass("new")}>
-                      <input
-                        type="radio"
-                        name="chatgpt-delivery-target"
-                        checked={targetDraftMode === "new"}
-                        onChange={() => chooseTargetMode("new")}
-                        className="mt-0.5 h-4 w-4 shrink-0 accent-[rgb(35,36,37)] dark:accent-white"
-                      />
-                      <span className="min-w-0">
-                        <span className="block font-semibold">{wm("target.optionNew")}</span>
-                        <span className="mt-0.5 block text-xs leading-5 text-[var(--color-text-tertiary)]">
-                          {wm("target.optionNewDetail")}
+                <details className="text-xs leading-5 text-[var(--color-text-tertiary)]">
+                  <summary className="cursor-pointer font-semibold text-[var(--color-text-secondary)]">
+                    {wm("advanced.summary")}
+                  </summary>
+                  <div className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-[140px_1fr]">
+                    <span>{wm("advanced.status")}</span>
+                    <span>{runtimeStatus.label}</span>
+                    <span>{wm("advanced.browser")}</span>
+                    <span>{browserStatusLabel}</span>
+                    <span>{wm("advanced.mcpApp")}</span>
+                    <span>{mcpStatusLabel}</span>
+                    {selectedConnector?.connector_id ? (
+                      <>
+                        <span>{wm("details.mcpUrlId")}</span>
+                        <span className="break-all font-mono">
+                          {selectedConnector.connector_id}
                         </span>
-                      </span>
-                    </label>
-                  </fieldset>
-                  {targetDraftError ? (
-                    <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                      {targetDraftError}
-                    </div>
-                  ) : null}
-                </div>
-              </SetupSection>
-
-              <details className="text-xs leading-5 text-[var(--color-text-tertiary)]">
-                <summary className="cursor-pointer font-semibold text-[var(--color-text-secondary)]">
-                  {wm("advanced.summary")}
-                </summary>
-                <div className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-[140px_1fr]">
-                  <span>{wm("advanced.status")}</span>
-                  <span>{runtimeStatus.label}</span>
-                  <span>{wm("advanced.browser")}</span>
-                  <span>{browserStatusLabel}</span>
-                  <span>{wm("advanced.mcpApp")}</span>
-                  <span>{mcpStatusLabel}</span>
-                  {selectedConnector?.connector_id ? (
-                    <>
-                      <span>{wm("details.mcpUrlId")}</span>
-                      <span className="break-all font-mono">{selectedConnector.connector_id}</span>
-                    </>
-                  ) : null}
-                  {selectedConnector ? (
-                    <>
-                      <span>{wm("details.remote")}</span>
-                      <span>{connectorActivityLabel(selectedConnector, wm)}</span>
-                    </>
-                  ) : null}
-                  {selectedConnector?.last_error ? (
-                    <>
-                      <span>{wm("details.lastMcpError")}</span>
-                      <span className="break-all text-rose-600 dark:text-rose-300">
-                        {selectedConnector.last_error}
-                      </span>
-                    </>
-                  ) : null}
-                  <span>{wm("advanced.targetStatus")}</span>
-                  <span>{targetStatusLabel}</span>
-                  {healthNextActionText(selectedHealth, wm) ? (
-                    <>
-                      <span>{wm("advanced.recommended")}</span>
-                      <span>{healthNextActionText(selectedHealth, wm)}</span>
-                    </>
-                  ) : null}
-                  <span>
-                    {browserActive
-                      ? wm("advanced.currentBrowserTab")
-                      : wm("advanced.lastBrowserTab")}
-                  </span>
-                  <span className="break-all font-mono">
-                    {currentBrowserUrl || wm("common.none")}
-                  </span>
-                  <span>{wm("advanced.deliveryTarget")}</span>
-                  <span className="break-all font-mono">
-                    {boundConversationUrl ||
-                      (pendingNewChatBind ? wm("target.newChatNextDelivery") : wm("common.none"))}
-                  </span>
-                  {selectedBrowserSession?.last_delivery_status ||
-                  selectedBrowserSession?.last_delivery_at ? (
-                    <>
-                      <span>{wm("advanced.lastDelivery")}</span>
-                      <span className="break-all font-mono">
-                        {[
-                          selectedBrowserSession.last_delivery_status || wm("advanced.recorded"),
-                          selectedBrowserSession.last_submission_evidence || "",
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </span>
-                    </>
-                  ) : null}
-                  {selectedBrowserSession?.last_error ? (
-                    <>
-                      <span>{wm("advanced.lastError")}</span>
-                      <span className="break-all text-rose-600 dark:text-rose-300">
-                        {selectedBrowserSession.last_error}
-                      </span>
-                    </>
-                  ) : null}
-                  {!boundConversationUrl && pendingNewChatBind ? (
-                    <>
-                      <span>{wm("advanced.pendingNewChat")}</span>
-                      <span className="break-all font-mono">
-                        {pendingNewChatUrl || "https://chatgpt.com/"}
-                      </span>
-                    </>
-                  ) : null}
-                  {selectedBrowserSession?.profile_dir ? (
-                    <>
-                      <span>{wm("details.profile")}</span>
-                      <span className="break-all font-mono">
-                        {selectedBrowserSession.profile_dir}
-                      </span>
-                    </>
-                  ) : null}
-                  {selectedBrowserSession?.visibility ? (
-                    <>
-                      <span>{wm("advanced.mode")}</span>
-                      <span>{selectedBrowserSession.visibility}</span>
-                    </>
-                  ) : null}
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {selectedConnector ? (
+                      </>
+                    ) : null}
+                    {selectedConnector ? (
+                      <>
+                        <span>{wm("details.remote")}</span>
+                        <span>{connectorActivityLabel(selectedConnector, wm)}</span>
+                      </>
+                    ) : null}
+                    {selectedConnector?.last_error ? (
+                      <>
+                        <span>{wm("details.lastMcpError")}</span>
+                        <span className="break-all text-rose-600 dark:text-rose-300">
+                          {selectedConnector.last_error}
+                        </span>
+                      </>
+                    ) : null}
+                    <span>{wm("advanced.targetStatus")}</span>
+                    <span>{targetStatusLabel}</span>
+                    {healthNextActionText(selectedHealth, wm) ? (
+                      <>
+                        <span>{wm("advanced.recommended")}</span>
+                        <span>{healthNextActionText(selectedHealth, wm)}</span>
+                      </>
+                    ) : null}
+                    <span>
+                      {browserActive
+                        ? wm("advanced.currentBrowserTab")
+                        : wm("advanced.lastBrowserTab")}
+                    </span>
+                    <span className="break-all font-mono">
+                      {currentBrowserUrl || wm("common.none")}
+                    </span>
+                    <span>{wm("advanced.deliveryTarget")}</span>
+                    <span className="break-all font-mono">
+                      {boundConversationUrl ||
+                        (pendingNewChatBind ? wm("target.newChatNextDelivery") : wm("common.none"))}
+                    </span>
+                    {selectedBrowserSession?.last_delivery_status ||
+                    selectedBrowserSession?.last_delivery_at ? (
+                      <>
+                        <span>{wm("advanced.lastDelivery")}</span>
+                        <span className="break-all font-mono">
+                          {[
+                            selectedBrowserSession.last_delivery_status || wm("advanced.recorded"),
+                            selectedBrowserSession.last_submission_evidence || "",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </span>
+                      </>
+                    ) : null}
+                    {selectedBrowserSession?.last_error ? (
+                      <>
+                        <span>{wm("advanced.lastError")}</span>
+                        <span className="break-all text-rose-600 dark:text-rose-300">
+                          {selectedBrowserSession.last_error}
+                        </span>
+                      </>
+                    ) : null}
+                    {!boundConversationUrl && pendingNewChatBind ? (
+                      <>
+                        <span>{wm("advanced.pendingNewChat")}</span>
+                        <span className="break-all font-mono">
+                          {pendingNewChatUrl || "https://chatgpt.com/"}
+                        </span>
+                      </>
+                    ) : null}
+                    {selectedBrowserSession?.profile_dir ? (
+                      <>
+                        <span>{wm("details.profile")}</span>
+                        <span className="break-all font-mono">
+                          {selectedBrowserSession.profile_dir}
+                        </span>
+                      </>
+                    ) : null}
+                    {selectedBrowserSession?.visibility ? (
+                      <>
+                        <span>{wm("advanced.mode")}</span>
+                        <span>{selectedBrowserSession.visibility}</span>
+                      </>
+                    ) : null}
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {selectedConnector ? (
+                      <button
+                        type="button"
+                        onClick={() => void createConnector(actorId)}
+                        disabled={createBusy || !groupId || !actorId}
+                        className={secondaryButtonClass("sm")}
+                      >
+                        {wm("buttons.rotateMcpUrl")}
+                      </button>
+                    ) : null}
+                    {selectedConnector ? (
+                      <button
+                        type="button"
+                        onClick={() => void revokeConnector(selectedConnector.connector_id)}
+                        disabled={revokeBusyId === selectedConnector.connector_id}
+                        className={dangerButtonClass("sm")}
+                      >
+                        {wm("buttons.revokeMcpUrl")}
+                      </button>
+                    ) : null}
                     <button
                       type="button"
-                      onClick={() => void createConnector(actorId)}
-                      disabled={createBusy || !groupId || !actorId}
+                      onClick={() => void checkBrowserSessionStatus()}
+                      disabled={browserBusy || !groupId || !actorId}
                       className={secondaryButtonClass("sm")}
                     >
-                      {wm("buttons.rotateMcpUrl")}
+                      {wm("buttons.checkStatus")}
                     </button>
-                  ) : null}
-                  {selectedConnector ? (
-                    <button
-                      type="button"
-                      onClick={() => void revokeConnector(selectedConnector.connector_id)}
-                      disabled={revokeBusyId === selectedConnector.connector_id}
-                      className={dangerButtonClass("sm")}
-                    >
-                      {wm("buttons.revokeMcpUrl")}
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={() => void checkBrowserSessionStatus()}
-                    disabled={browserBusy || !groupId || !actorId}
-                    className={secondaryButtonClass("sm")}
-                  >
-                    {wm("buttons.checkStatus")}
-                  </button>
-                </div>
-              </details>
-            </div>
-          </section>
-        ) : null}
+                  </div>
+                </details>
+              </div>
+            </section>
+          ) : null}
+        </section>
       </div>
     </div>
   );

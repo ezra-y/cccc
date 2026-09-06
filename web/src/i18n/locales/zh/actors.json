@@ -293,6 +293,6 @@
     "add": "添加成员",
     "noLocalRuntime": "没有检测到可用的本地模型，请先完成安装。",
     "confirmRuntimeChange": "确认将「{{group}}」中的「{{member}}」从 {{previous}} 更换为 {{next}}？",
-    "webBindingRetired": "该成员原来的网页聊天连接将失效。其他成员与共享登录账号不变。"
+    "webBindingRetired": "该成员原来的网页聊天连接将失效。其他成员与登录账号不变。"
   }
 }
