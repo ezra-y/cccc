@@ -10,6 +10,7 @@ import common from "../i18n/locales/zh/common.json";
 import WebModelConnectorsTab from "./modals/settings/WebModelConnectorsTab";
 import { GroupMembersMenu } from "./layout/GroupMembersMenu";
 import type { Actor } from "../types";
+import { useModalA11y } from "../hooks/useModalA11y";
 
 const mocks = vi.hoisted(() => ({
   sharedWebModelBrowser: vi.fn(),
@@ -113,12 +114,15 @@ const clickText = async (text: string) => {
   await act(async () => el!.click());
   await wait();
 };
+const groupTrigger = () => find('#t05-web-group [role="combobox"]');
 const choose = async (gid: string) => {
-  await act(async () => {
-    const el = find("#t05-web-group") as HTMLSelectElement;
-    el.value = gid;
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  const names: Record<string, string> = { g_a: "甲组", g_b: "乙组", g_empty: "空组" };
+  await click('#t05-web-group [role="combobox"]');
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+    (item) => item.textContent === names[gid],
+  );
+  expect(option, `missing group ${gid}`).toBeTruthy();
+  await act(async () => option!.click());
   await wait();
 };
 const deferred = <T,>() => {
@@ -228,29 +232,37 @@ describe("minimal overlay on upstream UI", () => {
       "https://chatgpt.com/c/g_b",
     );
     await clickText("刷新");
-    expect((find("#t05-web-group") as HTMLSelectElement).value).toBe("g_b");
+    expect(groupTrigger().textContent).toContain("乙组");
     expect(mocks.openWebModelBrowserSurfaceSession).not.toHaveBeenCalled();
     expect(mocks.bindCurrentWebModelBrowserConversation).not.toHaveBeenCalled();
     await choose("g_empty");
     expect(host.textContent).toContain("本组没有网页成员");
     expect(host.textContent).not.toContain("chatgpt.com/c/g_b");
   });
-  it("copies only the chosen group's fresh code and marks every added control", async () => {
+  it("removes the added binding-request copy without deleting the original MCP URL copy", async () => {
+    mocks.fetchWebModelConnectors.mockResolvedValue(
+      ok({
+        connectors: [
+          {
+            connector_id: "conn-g_a",
+            group_id: "g_a",
+            actor_id: "lead",
+            session_bound: true,
+            connector_url_with_token: "https://example.invalid/mcp/test-only",
+          },
+        ],
+      }),
+    );
     await render();
-    await choose("g_b");
-    await click('[data-t05-change="copy-binding"]');
-    expect(mocks.createWebModelConnectorBinding).toHaveBeenLastCalledWith("conn-g_b");
-    expect(mocks.copy.mock.calls[0][0]).toContain("乙组");
-    expect(mocks.copy.mock.calls[0][0]).toContain('"one\\"code"');
-    expect(host.querySelector("[data-t05-mark] circle")).toBeNull();
+    expect(host.querySelector('[data-t05-change="copy-binding"]')).toBeNull();
+    await clickText("复制 MCP URL");
+    expect(mocks.copy).toHaveBeenCalledExactlyOnceWith("https://example.invalid/mcp/test-only");
+    expect(mocks.createWebModelConnectorBinding).not.toHaveBeenCalled();
+    expect(mocks.bindCurrentWebModelBrowserConversation).not.toHaveBeenCalled();
     expect(host.querySelector('[data-t05-review="group-selector"]')).not.toBeNull();
-    expect(host.querySelector('[data-t05-review="chat-binding"]')).not.toBeNull();
-    expect(
-      host.querySelector('[data-t05-change="group-return-target"]')?.closest("[data-t05-review]"),
-    ).toBeNull();
     expect(host.querySelectorAll("[data-t05-review]").length).toBeLessThanOrEqual(5);
   });
-  it("discards a late actor response and a late code after switching groups", async () => {
+  it("discards a late actor response after switching groups", async () => {
     const delayedActors = deferred<ReturnType<typeof ok<{ actors: Actor[] }>>>();
     mocks.fetchActors.mockImplementation((gid: string) =>
       gid === "g_a" ? delayedActors.promise : Promise.resolve(ok({ actors: [other] })),
@@ -260,32 +272,8 @@ describe("minimal overlay on upstream UI", () => {
     await act(async () => delayedActors.resolve(ok({ actors: [lead] })));
     await wait();
     expect(host.textContent).not.toContain("组长甲 的 ChatGPT");
-    const delayedCode =
-      deferred<
-        ReturnType<
-          typeof ok<{
-            code: string;
-            group_id: string;
-            actor_id: string;
-            binding_expires_at: string;
-          }>
-        >
-      >();
-    mocks.createWebModelConnectorBinding.mockReturnValue(delayedCode.promise);
-    await click('[data-t05-change="copy-binding"]');
-    await choose("g_a");
-    await act(async () =>
-      delayedCode.resolve(
-        ok({
-          code: "late",
-          group_id: "g_b",
-          actor_id: "lead",
-          binding_expires_at: new Date(Date.now() + 10000).toISOString(),
-        }),
-      ),
-    );
-    await wait();
-    expect(mocks.copy).not.toHaveBeenCalled();
+    expect(groupTrigger().textContent).toContain("乙组");
+    expect(mocks.createWebModelConnectorBinding).not.toHaveBeenCalled();
   });
   it("showing and hiding the native projection does not start or close the browser", async () => {
     await render();
@@ -296,20 +284,46 @@ describe("minimal overlay on upstream UI", () => {
     expect(mocks.openWebModelBrowserSurfaceSession).not.toHaveBeenCalled();
     expect(mocks.closeWebModelBrowserSurfaceSession).not.toHaveBeenCalled();
   });
-  it("refuses expired binding codes without copying or changing the return target", async () => {
-    mocks.createWebModelConnectorBinding.mockResolvedValue(
+  it("restores Web Access before numbered steps even with no web member; opening it does not mutate a connection", async () => {
+    mocks.fetchGroups.mockResolvedValue(ok({ groups: [] }));
+    const openAccess = vi.fn();
+    await render(<WebModelConnectorsTab isDark={false} onOpenWebAccess={openAccess} />);
+    const access = find('[data-testid="web-access-prerequisite"]');
+    expect(access.closest("details")).toBeNull();
+    expect(
+      access.compareDocumentPosition(find('[data-setup-step="account"]')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    await clickText("打开 Web Access");
+    expect(openAccess).toHaveBeenCalledOnce();
+    expect(mocks.createWebModelConnector).not.toHaveBeenCalled();
+    expect(mocks.sharedWebModelBrowser.mock.calls.some((call) => call[0] === "open")).toBe(false);
+  });
+  it("keeps original direct setup controls visible and only folds the instructions; ready Web Access is not falsely missing", async () => {
+    mocks.fetchWebModelConnectors.mockResolvedValue(ok({ connectors: [] }));
+    mocks.fetchRemoteAccessState.mockResolvedValue(
       ok({
-        code: "expired",
-        group_id: "g_a",
-        actor_id: "lead",
-        binding_expires_at: new Date(0).toISOString(),
+        remote_access: {
+          config: { web_public_url: "https://example.invalid", access_token_configured: true },
+        },
       }),
     );
     await render();
-    await click('[data-t05-change="copy-binding"]');
-    expect(mocks.copy).not.toHaveBeenCalled();
-    expect(host.textContent).toContain("绑定码无效或已过期");
-    expect(mocks.bindCurrentWebModelBrowserConversation).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="web-access-prerequisite"]')).toBeNull();
+    const button = [...host.querySelectorAll("button")].find(
+      (item) => item.textContent === "创建 MCP URL",
+    )!;
+    expect(button).toBeTruthy();
+    expect(button.closest("details")).toBeNull();
+    expect(button.disabled).toBe(false);
+    const note = find('[data-t05-change="legacy-setup"]') as HTMLDetailsElement;
+    expect(note.open).toBe(false);
+    expect(note.textContent).toContain("权限");
+    await act(async () => note.querySelector("summary")!.click());
+    expect(note.open).toBe(true);
+    expect(host.querySelectorAll('input[name="chatgpt-delivery-target"]').length).toBe(2);
+    expect(host.textContent).not.toContain("复制绑定说明");
+    expect(mocks.createWebModelConnectorBinding).not.toHaveBeenCalled();
   });
 });
 describe("group members shortcut", () => {
@@ -385,7 +399,7 @@ describe("group members shortcut", () => {
 
 describe("shared login, role, and confirmation ownership", () => {
   it.each([false, true])(
-    "retains the upstream three steps and inserts group selection before connection (dark=%s)",
+    "numbers the added group step and reuses the existing anchored combobox (dark=%s)",
     async (isDark) => {
       await render(<WebModelConnectorsTab isDark={isDark} currentGroupId="g_a" />);
       const account = find('[data-setup-step="account"]');
@@ -395,8 +409,9 @@ describe("shared login, role, and confirmation ownership", () => {
       expect(account.parentElement).toBe(connection.parentElement);
       expect(connection.parentElement).toBe(target.parentElement);
       expect(account.textContent).toContain("1. 登录 ChatGPT");
-      expect(connection.textContent).toContain("2. 连接 CCCC MCP app");
-      expect(target.textContent).toContain("3. 选择投递目标");
+      expect(connection.textContent).toContain("3. 连接 CCCC MCP app");
+      expect(target.textContent).toContain("4. 选择投递目标");
+      expect(find('[data-setup-step="group"]').textContent).toContain("2. 选择工作组");
       expect(
         account.compareDocumentPosition(selector) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
@@ -407,16 +422,18 @@ describe("shared login, role, and confirmation ownership", () => {
         connection.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
       expect(account.querySelector('[data-t05-change="copy-binding"]')).toBeNull();
-      expect(connection.querySelector('[data-t05-change="copy-binding"]')).not.toBeNull();
+      expect(connection.querySelector('[data-t05-change="copy-binding"]')).toBeNull();
       expect(connection.querySelector('[data-t05-change="legacy-setup"]')).not.toBeNull();
       expect(target.querySelector('[data-t05-change="save-return-target"]')).not.toBeNull();
       expect(account.textContent).not.toMatch(/共享|共用/);
-      const select = find("#t05-web-group") as HTMLSelectElement;
-      expect(select.style.colorScheme).toBe(isDark ? "dark" : "light");
-      expect(select.style.paddingInlineEnd).toBe("3rem");
-      expect(find('[data-testid="web-group-chevron"]').classList.contains("end-4")).toBe(true);
+      expect(host.querySelector("#t05-web-group select")).toBeNull();
+      expect(groupTrigger().getAttribute("aria-label")).toBe("选择工作组");
+      await click('#t05-web-group [role="combobox"]');
+      expect(groupTrigger().getAttribute("aria-expanded")).toBe("true");
+      expect(document.querySelectorAll('[role="option"]').length).toBe(3);
+      await click('#t05-web-group [role="combobox"]');
       await choose("g_b");
-      expect(select.value).toBe("g_b");
+      expect(groupTrigger().textContent).toContain("乙组");
       expect(find('[data-testid="shared-login-status"]').textContent).toBeTruthy();
       expect(mocks.bindCurrentWebModelBrowserConversation).not.toHaveBeenCalled();
       expect(mocks.openWebModelBrowserSurfaceSession).not.toHaveBeenCalled();
@@ -499,14 +516,6 @@ describe("shared login, role, and confirmation ownership", () => {
     expect(mocks.revokeWebModelConnector).toHaveBeenCalledExactlyOnceWith("conn-g_b");
     expect(mocks.sharedWebModelBrowser.mock.calls.some((call) => call[0] === "close")).toBe(false);
   });
-  it("cancels replacement-code generation before even issuing a new one", async () => {
-    await render();
-    vi.mocked(window.confirm).mockReturnValue(false);
-    await click('[data-t05-change="copy-binding"]');
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("另一条聊天成功使用该码"));
-    expect(mocks.createWebModelConnectorBinding).not.toHaveBeenCalled();
-    expect(mocks.copy).not.toHaveBeenCalled();
-  });
   it("confirms changed return targets on save, but not while selecting the draft", async () => {
     await render();
     const newChat = host.querySelectorAll<HTMLInputElement>(
@@ -523,7 +532,7 @@ describe("shared login, role, and confirmation ownership", () => {
     expect(mocks.bindCurrentWebModelBrowserConversation).not.toHaveBeenCalled();
     expect(newChat.checked).toBe(true);
     await choose("g_b");
-    expect((find("#t05-web-group") as HTMLSelectElement).value).toBe("g_a");
+    expect(groupTrigger().textContent).toContain("甲组");
     vi.mocked(window.confirm).mockReturnValue(true);
     await click('[data-t05-change="save-return-target"]');
     expect(mocks.bindCurrentWebModelBrowserConversation).toHaveBeenCalledWith(
@@ -543,5 +552,36 @@ describe("shared login, role, and confirmation ownership", () => {
         (call) => call[0] === "close" || call[0] === "open",
       ),
     ).toBe(false);
+  });
+});
+
+describe("group picker inside settings", () => {
+  it("uses the first Escape for the group menu and only the second for settings", async () => {
+    const onClose = vi.fn();
+    function Dialog() {
+      const { modalRef } = useModalA11y(true, onClose);
+      return (
+        <div ref={modalRef}>
+          <WebModelConnectorsTab isDark={false} currentGroupId="g_a" />
+        </div>
+      );
+    }
+    await render(<Dialog />);
+    await click('#t05-web-group [role="combobox"]');
+    expect(document.querySelector('[role="option"]')).not.toBeNull();
+    await act(async () =>
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      ),
+    );
+    await wait();
+    expect(document.querySelector('[role="option"]')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () =>
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      ),
+    );
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });

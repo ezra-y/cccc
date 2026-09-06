@@ -1215,8 +1215,8 @@
         "accountTitle": "1. 登录 ChatGPT",
         "accountReadyHint": "CCCC 可以使用这个浏览器 profile 进行 ChatGPT 投递。",
         "accountOpenHint": "在这里打开 ChatGPT，并登录一次。",
-        "mcpAppTitle": "2. 连接 CCCC MCP app",
-        "deliveryTargetTitle": "3. 选择投递目标"
+        "mcpAppTitle": "3. 连接 CCCC MCP app",
+        "deliveryTargetTitle": "4. 选择投递目标"
       },
       "next": {
         "prefix": "下一步：{{action}}",
@@ -1351,18 +1351,13 @@
         "identity": "连接当前网页成员的聊天",
         "bound": "聊天身份已绑定",
         "unbound": "尚未绑定聊天",
-        "copy": "复制绑定说明",
         "disconnect": "断开聊天",
-        "copyHint": "已有隧道插件可直接复制绑定说明；原版直连设置保留在下方。",
         "identityNote": "绑定使用成员在本组的实际角色；网页组员不会获得组长权限。回传地址在下方单独设置。",
         "original": "连接方式与权限说明",
         "sharedBrowser": "隐藏画面后仍可接收报告。关闭或重启此浏览器会影响所有工作组。",
         "view": "查看画面",
         "hide": "隐藏画面",
-        "copied": "已复制本组绑定说明",
-        "invalidCode": "绑定码无效或已过期，请重新获取。",
         "emptyGroup": "本组没有网页成员。请从工作组标题旁的“成员”入口添加或修改成员。",
-        "instructions": "将当前聊天绑定到工作组「{{group}}」的 {{actor}}。请依次调用 cccc_session_bind(code={{code}}) 和 cccc_bootstrap()。绑定码十分钟有效、仅可用一次。请报告实际工作组及回传地址状态，不派发新任务。",
         "sharedTitle": "登录 ChatGPT",
         "sharedLoginNote": "登录一次，所有工作组都使用这个账号。",
         "sharedUnavailable": "浏览器状态读取失败",
@@ -1372,12 +1367,13 @@
         "roleForeman": "组长",
         "rolePeer": "组员",
         "confirmDisconnect": "确认断开「{{group}}」中「{{actor}}」的聊天连接？\n\n旧聊天将不能再以该成员身份调用 CCCC。不会删除成员或退出账号，其他组不受影响。",
-        "confirmReplacementCode": "为「{{group}}」中的「{{actor}}」生成更换聊天的绑定说明？\n\n生成后旧聊天暂时仍可用；另一条聊天成功使用该码时，旧绑定失效，旧回传地址也需要重新确认。",
         "confirmRotate": "确认轮换「{{group}}」中「{{actor}}」的连接入口？\n\n原连接将失效，需要使用新入口或绑定说明重新连接。",
         "confirmTarget": "确认修改「{{group}}」中「{{actor}}」的回传目标？\n\n原目标：{{previous}}\n新目标：{{next}}\n\n后续报告会发往新目标；此操作不会切换登录账号，也不会自动完成聊天身份绑定。",
         "confirmCloseBrowser": "关闭ChatGPT 浏览器？\n\n所有使用它的工作组都会暂时停止网页投递。登录资料会保留；只想收起画面请取消，然后选择“隐藏画面”。",
         "confirmRestartBrowser": "重启ChatGPT 浏览器？\n\n这会中断所有组正在使用的浏览器页面，未发送的草稿可能丢失。登录资料会保留。",
-        "confirmDiscard": "有尚未保存的回传地址修改。放弃这次修改并切换工作组？"
+        "confirmDiscard": "有尚未保存的回传地址修改。放弃这次修改并切换工作组？",
+        "groupStep": "2. 选择工作组",
+        "webAccessScope": "当前聊天已连接，不必重复创建连接入口。"
       }
     }
   },

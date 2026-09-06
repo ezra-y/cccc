@@ -17,7 +17,7 @@ import {
 } from "../../../utils/webModelSelection";
 import { webModelConnectorMcpUrl } from "../../../utils/webModelConnector";
 import { ProjectedBrowserSurfacePanel } from "../../browser/ProjectedBrowserSurfacePanel";
-import { ChevronDownIcon } from "../../Icons";
+import { SelectCombobox } from "../../SelectCombobox";
 import {
   dangerButtonClass,
   inputClass,
@@ -131,7 +131,7 @@ function SetupSection({
 }: {
   title: ReactNode;
   children: ReactNode;
-  step?: "account" | "connection" | "target";
+  step?: "account" | "group" | "connection" | "target";
 }) {
   return (
     <div
@@ -175,7 +175,6 @@ export default function WebModelConnectorsTab({
   const [groupId, setGroupId] = useState("");
   const [actorId, setActorId] = useState("");
   const [busy, setBusy] = useState(false);
-  const [bindingBusy, setBindingBusy] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
   const [revokeBusyId, setRevokeBusyId] = useState("");
   const [error, setError] = useState("");
@@ -392,17 +391,26 @@ export default function WebModelConnectorsTab({
       : !sessionBound && selectedMcpUrl && !chatGptSeen
         ? { label: wm("summary.waitingForMcp"), tone: "needs" as const }
         : { label: wm("summary.needsSetup"), tone: "needs" as const };
-  const nextSetupAction = !selectedActor
-    ? wm("next.createActorInGroup")
-    : !sessionBound
-      ? wm("t05.copyHint")
-      : !selectedActorRunning
-        ? wm("t05.startMember")
-        : !browserReady
-          ? wm("t05.checkSharedLogin")
-          : !boundConversationUrl && !pendingNewChatBind
-            ? wm("next.bindTarget")
-            : healthNextActionText(selectedHealth, wm) || wm("next.ready");
+  const nextSetupAction =
+    !sessionBound && !publicEndpointReady
+      ? wm("next.setPublicHttps")
+      : !sessionBound && !uiAccessTokenPresent
+        ? wm("next.createAccessToken")
+        : !selectedActor
+          ? wm("next.createActorInGroup")
+          : !selectedActorRunning
+            ? wm("t05.startMember")
+            : !browserReady
+              ? wm("t05.checkSharedLogin")
+              : !sessionBound && !selectedMcpUrl
+                ? wm(selectedConnector ? "next.rotateConnector" : "next.createConnector")
+                : mcpLastCallFailed
+                  ? wm("next.inspectMcpError")
+                  : !sessionBound && !chatGptSeen
+                    ? wm("next.pasteMcpUrl")
+                    : !boundConversationUrl && !pendingNewChatBind
+                      ? wm("next.bindTarget")
+                      : healthNextActionText(selectedHealth, wm) || wm("next.ready");
   const mcpInstructionDetail = selectedMcpUrl
     ? wm("mcp.copyReadyHint")
     : selectedConnector
@@ -892,56 +900,6 @@ export default function WebModelConnectorsTab({
     await bindConversation(targetDraftUrl, { notice: wm("notices.targetSavedExisting") });
   };
 
-  const copyBinding = async () => {
-    const gid = groupId;
-    const aid = actorId;
-    if (bindingBusy || !gid || !aid) return;
-    if (
-      sessionBound &&
-      !window.confirm(
-        wm("t05.confirmReplacementCode", {
-          group: groups.find((g) => g.group_id === gid)?.title || gid,
-          actor: selectedActorLabel || aid,
-        }),
-      )
-    )
-      return;
-    setBindingBusy(true);
-    setError("");
-    try {
-      const connector = selectedConnector || (await createConnector(aid));
-      if (!connector || !matchesWebModelActorSelection(currentSelectionRef.current, gid, aid))
-        return;
-      const result = await api.createWebModelConnectorBinding(connector.connector_id);
-      if (!matchesWebModelActorSelection(currentSelectionRef.current, gid, aid)) return;
-      if (!result.ok) throw new Error(result.error.message);
-      const binding = result.result;
-      if (
-        binding.group_id !== gid ||
-        binding.actor_id !== aid ||
-        !binding.code ||
-        !Number.isFinite(Date.parse(binding.binding_expires_at)) ||
-        Date.parse(binding.binding_expires_at) <= Date.now()
-      )
-        throw new Error(wm("t05.invalidCode"));
-      const copied = await copyTextToClipboard(
-        wm("t05.instructions", {
-          group: groups.find((group) => group.group_id === gid)?.title || gid,
-          actor: aid,
-          code: JSON.stringify(binding.code),
-          interpolation: { escapeValue: false },
-        }),
-      );
-      if (matchesWebModelActorSelection(currentSelectionRef.current, gid, aid))
-        pushNotice(copied ? wm("t05.copied") : wm("notices.copyFailed"));
-    } catch (error) {
-      if (matchesWebModelActorSelection(currentSelectionRef.current, gid, aid))
-        setError(String(error));
-    } finally {
-      setBindingBusy(false);
-    }
-  };
-
   const copyValue = async (value: string, labelText: string) => {
     const ok = await copyTextToClipboard(value);
     pushNotice(ok ? wm("notices.copied", { label: labelText }) : wm("notices.copyFailed"));
@@ -1009,6 +967,36 @@ export default function WebModelConnectorsTab({
               </div>
             </div>
           </div>
+          {!webAccessReady ? (
+            <div
+              data-testid="web-access-prerequisite"
+              className="mt-4 flex flex-col gap-3 border-t border-[var(--glass-border-subtle)] pt-3 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-[var(--color-text-primary)]">
+                  {wm("summary.webAccess")}
+                </div>
+                <div className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
+                  {webAccessPrerequisiteLabel}
+                </div>
+                {sessionBound ? (
+                  <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+                    {wm("t05.webAccessScope")}
+                  </p>
+                ) : null}
+              </div>
+              {onOpenWebAccess ? (
+                <button
+                  type="button"
+                  onClick={onOpenWebAccess}
+                  className={`${secondaryButtonClass("sm")} shrink-0`}
+                >
+                  {wm("buttons.openWebAccess")}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+
           {extraChatGptActors.length ? (
             <div className="mt-3 text-xs leading-5 text-amber-700 dark:text-amber-300">
               {wm("actorSection.multipleWarning")}
@@ -1138,62 +1126,54 @@ export default function WebModelConnectorsTab({
               </div>
             </SetupSection>
 
-            <div
-              data-t05-change="web-group-selector"
-              data-t05-review="group-selector"
-              className="rounded-lg border-t border-[var(--glass-border-subtle)] p-3"
-            >
-              <label className={labelClass(isDark)} htmlFor="t05-web-group">
-                {wm("t05.selectGroup")}
-              </label>
-              <div className="relative">
-                <select
-                  id="t05-web-group"
-                  style={{
-                    colorScheme: isDark ? "dark" : "light",
-                    appearance: "none",
-                    paddingInlineEnd: "3rem",
-                  }}
-                  value={groupId}
-                  onChange={(event) => {
-                    if (
-                      targetDraftDirty &&
-                      targetDraftTouched &&
-                      !window.confirm(wm("t05.confirmDiscard"))
-                    )
-                      return;
-                    selectGroup(event.target.value);
-                  }}
-                  className={inputClass(isDark)}
-                >
-                  {!groupId && <option value="">{wm("t05.selectGroup")}</option>}
-                  {groups.map((group) => (
-                    <option key={group.group_id} value={group.group_id}>
-                      {group.title || group.group_id}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDownIcon
-                  data-testid="web-group-chevron"
-                  aria-hidden="true"
-                  className="pointer-events-none absolute end-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-secondary)]"
-                />
-              </div>
-              <p className="mt-2 text-xs leading-5 text-[var(--color-text-tertiary)]">
-                {wm("t05.groupScope")}
-              </p>
-              {selectedActor ? (
-                <p
-                  data-testid="web-member-role"
-                  className="mt-2 text-sm text-[var(--color-text-secondary)]"
-                >
-                  {wm("t05.currentMember", {
-                    member: selectedActorLabel || actorId,
-                    role: wm(selectedActor.role === "foreman" ? "t05.roleForeman" : "t05.rolePeer"),
-                  })}
+            <SetupSection step="group" title={wm("t05.groupStep")}>
+              <div
+                data-t05-change="web-group-selector"
+                data-t05-review="group-selector"
+                className="rounded-lg p-3"
+              >
+                <div id="t05-web-group">
+                  <SelectCombobox
+                    items={groups.map((group) => ({
+                      value: group.group_id,
+                      label: group.title || group.group_id,
+                    }))}
+                    value={groupId}
+                    onChange={(nextGroupId) => {
+                      if (nextGroupId === groupId) return;
+                      if (
+                        targetDraftDirty &&
+                        targetDraftTouched &&
+                        !window.confirm(wm("t05.confirmDiscard"))
+                      )
+                        return;
+                      selectGroup(nextGroupId);
+                    }}
+                    ariaLabel={wm("t05.selectGroup")}
+                    placeholder={wm("t05.selectGroup")}
+                    emptyText={wm("prerequisites.noGroupAvailable")}
+                    className={inputClass(isDark)}
+                    contentClassName="!w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] !bg-[var(--color-bg-secondary)] !backdrop-blur-none"
+                  />
+                </div>
+                <p className="mt-2 text-xs leading-5 text-[var(--color-text-tertiary)]">
+                  {wm("t05.groupScope")}
                 </p>
-              ) : null}
-            </div>
+                {selectedActor ? (
+                  <p
+                    data-testid="web-member-role"
+                    className="mt-2 text-sm text-[var(--color-text-secondary)]"
+                  >
+                    {wm("t05.currentMember", {
+                      member: selectedActorLabel || actorId,
+                      role: wm(
+                        selectedActor.role === "foreman" ? "t05.roleForeman" : "t05.rolePeer",
+                      ),
+                    })}
+                  </p>
+                ) : null}
+              </div>
+            </SetupSection>
 
             {selectedActor ? (
               <>
@@ -1203,15 +1183,6 @@ export default function WebModelConnectorsTab({
                       <span data-t05-change="binding-status">
                         {sessionBound ? wm("t05.bound") : wm("t05.unbound")}
                       </span>
-                      <button
-                        type="button"
-                        data-t05-change="copy-binding"
-                        disabled={bindingBusy || createBusy}
-                        onClick={() => void copyBinding()}
-                        className={secondaryButtonClass("sm")}
-                      >
-                        {wm("t05.copy")}
-                      </button>
                       {sessionBound && selectedConnector && (
                         <button
                           type="button"
@@ -1228,115 +1199,91 @@ export default function WebModelConnectorsTab({
                       {wm("t05.identityNote")}
                     </p>
                   </div>
-                  <details data-t05-change="legacy-setup" className="mt-3">
-                    <summary
-                      data-t05-review="legacy-fold"
-                      className="cursor-pointer text-sm rounded-md"
-                    >
-                      {wm("t05.original")}
-                    </summary>
-                    {!webAccessReady ? (
-                      <div className="mt-4 flex flex-col gap-3 border-t border-[var(--glass-border-subtle)] pt-3 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="min-w-0">
-                          <div className="text-xs font-medium text-[var(--color-text-primary)]">
-                            {wm("summary.webAccess")}
-                          </div>
-                          <div className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
-                            {webAccessPrerequisiteLabel}
-                          </div>
-                        </div>
-                        {onOpenWebAccess ? (
-                          <button
-                            type="button"
-                            onClick={onOpenWebAccess}
-                            className={`${secondaryButtonClass("sm")} shrink-0`}
+                  <div className="mt-3">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span
+                            className={[
+                              "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
+                              setupPillClass(mcpStatusTone),
+                            ].join(" ")}
                           >
-                            {wm("buttons.openWebAccess")}
-                          </button>
+                            {mcpStatusLabel}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
+                          {mcpInstructionDetail}
+                        </p>
+                        {!chatGptSeen ? (
+                          <details data-t05-change="legacy-setup" className="mt-3">
+                            <summary
+                              data-t05-review="legacy-fold"
+                              className="cursor-pointer text-sm rounded-md"
+                            >
+                              {wm("t05.original")}
+                            </summary>
+
+                            <ol className="mt-3 list-decimal space-y-1 pl-4 text-xs leading-5 text-[var(--color-text-tertiary)]">
+                              <li>{wm("mcp.instructionOpenSettings")}</li>
+                              <li>{wm("mcp.instructionCreateApp")}</li>
+                              <li>{wm("mcp.instructionEnableConnector")}</li>
+                            </ol>
+                            <div className="mt-3 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
+                              <span>{wm("mcp.permissionHint")}</span>
+                              <a
+                                href="https://help.openai.com/en/articles/11487775-apps-in-chatgpt"
+                                target="_blank"
+                                rel="noreferrer"
+                                className="ml-2 font-semibold underline-offset-2 hover:underline"
+                              >
+                                {wm("mcp.permissionDocsLink")}
+                              </a>
+                            </div>
+                          </details>
+                        ) : null}
+                        {selectedConnector && !selectedMcpUrl ? (
+                          <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                            {wm("warnings.rotateOldConnector")}
+                          </div>
+                        ) : null}
+                        {mcpUrlLocalWarning ? (
+                          <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                            {wm("warnings.localMcpUrl")}
+                          </div>
+                        ) : null}
+                        {mcpUrlHttpsWarning && !mcpUrlLocalWarning ? (
+                          <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                            {wm("warnings.nonHttpsMcpUrl")}
+                          </div>
                         ) : null}
                       </div>
-                    ) : null}
-                    <div className="mt-3">
-                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span
-                              className={[
-                                "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
-                                setupPillClass(mcpStatusTone),
-                              ].join(" ")}
-                            >
-                              {mcpStatusLabel}
-                            </span>
-                          </div>
-                          <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
-                            {mcpInstructionDetail}
-                          </p>
-                          {!chatGptSeen ? (
-                            <>
-                              <ol className="mt-3 list-decimal space-y-1 pl-4 text-xs leading-5 text-[var(--color-text-tertiary)]">
-                                <li>{wm("mcp.instructionOpenSettings")}</li>
-                                <li>{wm("mcp.instructionCreateApp")}</li>
-                                <li>{wm("mcp.instructionEnableConnector")}</li>
-                              </ol>
-                              <div className="mt-3 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
-                                <span>{wm("mcp.permissionHint")}</span>
-                                <a
-                                  href="https://help.openai.com/en/articles/11487775-apps-in-chatgpt"
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="ml-2 font-semibold underline-offset-2 hover:underline"
-                                >
-                                  {wm("mcp.permissionDocsLink")}
-                                </a>
-                              </div>
-                            </>
-                          ) : null}
-                          {selectedConnector && !selectedMcpUrl ? (
-                            <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                              {wm("warnings.rotateOldConnector")}
-                            </div>
-                          ) : null}
-                          {mcpUrlLocalWarning ? (
-                            <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                              {wm("warnings.localMcpUrl")}
-                            </div>
-                          ) : null}
-                          {mcpUrlHttpsWarning && !mcpUrlLocalWarning ? (
-                            <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                              {wm("warnings.nonHttpsMcpUrl")}
-                            </div>
-                          ) : null}
-                        </div>
-                        <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
-                          {selectedMcpUrl ? (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                void copyValue(selectedMcpUrl, wm("copyLabels.mcpUrl"))
-                              }
-                              className={
-                                chatGptSeen ? secondaryButtonClass("sm") : primaryButtonClass(false)
-                              }
-                            >
-                              {wm("buttons.copyMcpUrl")}
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => void createConnector(actorId)}
-                              disabled={createBusy || !groupId || !actorId || !webAccessReady}
-                              className={primaryButtonClass(createBusy)}
-                            >
-                              {selectedConnector
-                                ? wm("buttons.rotateMcpUrl")
-                                : wm("buttons.createMcpUrl")}
-                            </button>
-                          )}
-                        </div>
+                      <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                        {selectedMcpUrl ? (
+                          <button
+                            type="button"
+                            onClick={() => void copyValue(selectedMcpUrl, wm("copyLabels.mcpUrl"))}
+                            className={
+                              chatGptSeen ? secondaryButtonClass("sm") : primaryButtonClass(false)
+                            }
+                          >
+                            {wm("buttons.copyMcpUrl")}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void createConnector(actorId)}
+                            disabled={createBusy || !groupId || !actorId || !webAccessReady}
+                            className={primaryButtonClass(createBusy)}
+                          >
+                            {selectedConnector
+                              ? wm("buttons.rotateMcpUrl")
+                              : wm("buttons.createMcpUrl")}
+                          </button>
+                        )}
                       </div>
                     </div>
-                  </details>
+                  </div>
                 </SetupSection>
 
                 <SetupSection

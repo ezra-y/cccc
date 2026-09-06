@@ -1220,8 +1220,8 @@
         "accountTitle": "1. ChatGPT にサインイン",
         "accountReadyHint": "CCCC はこのブラウザ profile を ChatGPT 配信に使えます。",
         "accountOpenHint": "ここで ChatGPT を開き、一度サインインしてください。",
-        "mcpAppTitle": "2. CCCC MCP app を接続",
-        "deliveryTargetTitle": "3. 配信先を選択"
+        "mcpAppTitle": "3. CCCC MCP app を接続",
+        "deliveryTargetTitle": "4. 配信先を選択"
       },
       "next": {
         "prefix": "次: {{action}}",
@@ -1356,18 +1356,13 @@
         "identity": "この Web メンバーの会話を接続",
         "bound": "会話の識別情報を紐付け済み",
         "unbound": "会話は未設定",
-        "copy": "紐付け手順をコピー",
         "disconnect": "会話の紐付けを解除",
-        "copyHint": "既存のトンネル用アプリでは紐付け手順をコピーしてください。従来の直接接続設定は下にあります。",
         "identityNote": "紐付けにはグループ内の実際の役割を使います。Web メンバーに Foreman の権限は付与されません。返信先は下で設定します。",
         "original": "接続設定と権限の説明",
         "sharedBrowser": "画面を隠しても報告を受信できます。このブラウザーの終了・再起動は全グループに影響します。",
         "view": "画面を表示",
         "hide": "画面を隠す",
-        "copied": "このグループの紐付け手順をコピーしました",
-        "invalidCode": "コードが無効または期限切れです。再取得してください。",
         "emptyGroup": "このグループには Web メンバーがいません。グループ名の横の「メンバー」から追加・変更してください。",
-        "instructions": "この会話をグループ「{{group}}」の {{actor}} に紐付けてください。cccc_session_bind(code={{code}})、cccc_bootstrap() の順で呼び出します。コードは10分間有効で一度だけ使えます。グループと返信先の状態を報告し、新しい作業は割り当てないでください。",
         "sharedTitle": "ChatGPT にログイン",
         "sharedLoginNote": "ログインは一度だけ。すべてのグループがこのアカウントを使用します。",
         "sharedUnavailable": "ブラウザーの状態を取得できません",
@@ -1377,12 +1372,13 @@
         "roleForeman": "Foreman",
         "rolePeer": "メンバー",
         "confirmDisconnect": "「{{group}}」の「{{actor}}」の会話接続を解除しますか？\n\n以前の会話はこのメンバーとして CCCC を利用できなくなります。メンバーやログインは削除されず、他のグループにも影響しません。",
-        "confirmReplacementCode": "「{{group}}」の「{{actor}}」の会話を変更する手順を生成しますか？\n\n別の会話がコードを使用するまでは元の会話が有効です。使用後は旧接続が失効し、返信先の再確認が必要です。",
         "confirmRotate": "「{{group}}」の「{{actor}}」の接続先を更新しますか？\n\n元の接続は失効し、新しい接続先または紐付け手順で再接続が必要です。",
         "confirmTarget": "「{{group}}」の「{{actor}}」の返信先を変更しますか？\n\n変更前：{{previous}}\n変更後：{{next}}\n\n以後の報告は新しい返信先へ送られます。ログインと会話識別情報は変わりません。",
         "confirmCloseBrowser": "ChatGPT ブラウザーを閉じますか？\n\n利用中のすべてのグループで Web 送信が一時停止します。ログイン情報は保持します。表示だけを閉じる場合は取り消して「画面を隠す」を選んでください。",
         "confirmRestartBrowser": "ChatGPT ブラウザーを再起動しますか？\n\nすべてのグループが利用するページが中断され、未送信の下書きが失われる可能性があります。ログイン情報は保持します。",
-        "confirmDiscard": "返信先に未保存の変更があります。破棄してグループを切り替えますか？"
+        "confirmDiscard": "返信先に未保存の変更があります。破棄してグループを切り替えますか？",
+        "groupStep": "2. グループを選択",
+        "webAccessScope": "この会話は接続済みです。接続先を再作成する必要はありません。"
       }
     }
   },

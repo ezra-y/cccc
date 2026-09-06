@@ -92,7 +92,7 @@ export function useModalA11y(isOpen: boolean, onClose: () => void) {
 
   const handleEscape = useCallback(
     (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || e.defaultPrevented) return;
       if (!isTopModal(instanceId)) return;
       e.preventDefault();
       e.stopPropagation();
