@@ -39,6 +39,7 @@ const WEB_TRANSPORT_NOTE: &str = "[CCCC] Web transport:\n\
 - A completed member report remains the human-facing output. After reviewing it, call cccc_coordination(action=\"decide\", event_ids=[...], decision=\"continue\"|\"wait_user\"|\"complete\"|\"blocked\") only to record machine responsibility. Keep your normal assistant reply for people and do not repeat the report in summary. Reading or replying alone does not resolve the handoff.\n\
 - continue must include next_actor_id, next_title, and next_text so real work is created and delivered. End this turn only after the decision result says caller_may_idle=true; safe_to_idle tells whether the whole group may be quiet.\n\
 - For non-trivial local development work, default to cccc_code_exec so repo reads, patches, tests, diffs, and reports stay in one focused Codex-style loop; use direct tools only for simple one-step actions.\n\
+- If cccc_coordination is visible but rejects decide as an unavailable action, this conversation cached an older connector schema. Create and bind a new chat; do not substitute add_decision or add_handoff because they do not resolve responsibility.\n\
 - If CCCC MCP tools are not visible in the selected web model, you do not have CCCC local access in this chat; tell the user to switch to a supported session that can see the CCCC connector.\n\
 - Text typed only in this web chat is not delivered to CCCC users or peers.";
 
@@ -279,6 +280,34 @@ async fn deliver_once(
     }
     let target = load_target(state, group_id, actor_id)?;
     let target_url = target["url"].as_str().unwrap_or("");
+    let retained_busy_deferral = target["last_delivery_status"] == "deferred"
+        && matches!(
+            target
+                .pointer("/last_submission_evidence/submission_evidence")
+                .and_then(Value::as_str),
+            Some("not_sent_chat_busy" | "not_sent_composer_occupied")
+        );
+    if retained_busy_deferral
+        && let Some(browser) = state
+            .browser_surfaces
+            .relay_surface_deferral(surface_key())
+            .await
+            .map_err(|error| {
+                ApiError::unavailable("web_model_browser_probe_failed", error.to_string())
+            })?
+    {
+        if browser["submission_evidence"]
+            != target["last_submission_evidence"]["submission_evidence"]
+        {
+            update_target(
+                state,
+                group_id,
+                actor_id,
+                json!({"last_submission_evidence":browser}),
+            )?;
+        }
+        return Ok(DeliveryOutcome::Idle);
+    }
     if target["last_delivery_status"] == "submitting" {
         let message = "browser delivery was interrupted after its at-most-once dispatch fence; the message will not be redelivered automatically";
         let evidence = json!({
@@ -1487,6 +1516,14 @@ mod retry_integration_tests {
                 0,
                 "sent during the current answer"
             );
+            for _ in 0..5 {
+                assert!(matches!(
+                    deliver_pending(&state, gid, "web")
+                        .await
+                        .expect("same busy report remains deferred"),
+                    DeliveryOutcome::Idle
+                ));
+            }
             let health: Value = reqwest::Client::builder()
                 .no_proxy()
                 .build()
@@ -1573,9 +1610,7 @@ mod retry_integration_tests {
                 .collect::<Vec<_>>();
             assert_eq!(
                 transitions,
-                vec![
-                    "claimed", "failed", "claimed", "failed", "claimed", "accepted"
-                ]
+                vec!["claimed", "failed", "claimed", "accepted"]
             );
             let mail = call(
                 "inbox_peek",

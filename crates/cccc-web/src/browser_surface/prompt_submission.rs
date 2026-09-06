@@ -593,6 +593,25 @@ impl BrowserSurfaces {
         Ok(!snapshot.running && !snapshot.stop_visible && snapshot.composer_chars == 0)
     }
 
+    pub(crate) async fn relay_surface_deferral(&self, key: &str) -> Result<Option<Value>> {
+        let page = self.page(key).await?;
+        if sign_in_required(&page).await? {
+            return Ok(None);
+        }
+        let snapshot = inspect_submission(&page, "__cccc_relay_busy_probe__", &[]).await?;
+        let reason = if snapshot.running || snapshot.stop_visible {
+            "not_sent_chat_busy"
+        } else if snapshot.composer_chars > 0 {
+            "not_sent_composer_occupied"
+        } else {
+            return Ok(None);
+        };
+        let mut evidence = serde_json::to_value(snapshot).context("encode relay deferral")?;
+        evidence["submitted"] = json!(false);
+        evidence["submission_evidence"] = json!(reason);
+        Ok(Some(evidence))
+    }
+
     pub(crate) async fn prompt_readiness(&self, key: &str) -> Result<Value> {
         let page = self.page(key).await?;
         let url = page.url().await?.unwrap_or_default();

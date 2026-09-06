@@ -960,6 +960,14 @@ async fn relay_idle_probe_requires_an_empty_non_generating_composer() {
             .await
             .expect("busy probe")
     );
+    assert_eq!(
+        manager
+            .relay_surface_deferral("relay-idle")
+            .await
+            .expect("busy evidence")
+            .expect("busy deferral")["submission_evidence"],
+        "not_sent_chat_busy"
+    );
     let page = manager
         .sessions
         .lock()
@@ -977,6 +985,14 @@ async fn relay_idle_probe_requires_an_empty_non_generating_composer() {
             .await
             .expect("draft probe")
     );
+    assert_eq!(
+        manager
+            .relay_surface_deferral("relay-idle")
+            .await
+            .expect("draft evidence")
+            .expect("draft deferral")["submission_evidence"],
+        "not_sent_composer_occupied"
+    );
     page.evaluate("document.querySelector('textarea').value=''")
         .await
         .expect("clear fixture");
@@ -985,6 +1001,13 @@ async fn relay_idle_probe_requires_an_empty_non_generating_composer() {
             .relay_surface_idle("relay-idle")
             .await
             .expect("idle probe")
+    );
+    assert!(
+        manager
+            .relay_surface_deferral("relay-idle")
+            .await
+            .expect("idle evidence")
+            .is_none()
     );
     manager.close("relay-idle").await.expect("close browser");
     server.abort();
