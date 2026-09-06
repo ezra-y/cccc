@@ -384,6 +384,28 @@ describe("group members shortcut", () => {
 });
 
 describe("shared login, role, and confirmation ownership", () => {
+  it.each([false, true])(
+    "gives the two main sections equal heading prominence and themes the native select (dark=%s)",
+    async (isDark) => {
+      await render(<WebModelConnectorsTab isDark={isDark} currentGroupId="g_a" />);
+      const shared = find("#t05-shared-login-heading");
+      const group = find("#t05-web-group-heading");
+      expect(shared.tagName).toBe("H4");
+      expect(group.tagName).toBe(shared.tagName);
+      expect(group.className).toBe(shared.className);
+      expect(shared.classList.contains("text-xl")).toBe(true);
+      expect(shared.classList.contains("sm:text-2xl")).toBe(true);
+      const select = find("#t05-web-group") as HTMLSelectElement;
+      expect(group.querySelector('label[for="t05-web-group"]')).not.toBeNull();
+      expect(select.style.colorScheme).toBe(isDark ? "dark" : "light");
+      await choose("g_b");
+      expect(select.value).toBe("g_b");
+      expect(find('[data-testid="shared-login-status"]').textContent).toBeTruthy();
+      expect(mocks.bindCurrentWebModelBrowserConversation).not.toHaveBeenCalled();
+      expect(mocks.openWebModelBrowserSurfaceSession).not.toHaveBeenCalled();
+    },
+  );
+
   it("renders one shared login before group selection and keeps it usable with no groups", async () => {
     mocks.fetchGroups.mockResolvedValue(ok({ groups: [] }));
     await render();

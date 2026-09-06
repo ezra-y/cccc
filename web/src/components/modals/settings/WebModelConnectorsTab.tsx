@@ -985,9 +985,13 @@ export default function WebModelConnectorsTab({
         <section
           data-t05-change="shared-browser"
           data-t05-review="shared-login"
+          aria-labelledby="t05-shared-login-heading"
           className={settingsWorkspacePanelClass(isDark)}
         >
-          <h4 className="font-semibold text-[var(--color-text-primary)]">
+          <h4
+            id="t05-shared-login-heading"
+            className="mb-3 text-xl font-semibold leading-7 tracking-tight text-[var(--color-text-primary)] sm:text-2xl sm:leading-8"
+          >
             {wm("t05.sharedTitle")}
           </h4>
           <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
@@ -1077,16 +1081,21 @@ export default function WebModelConnectorsTab({
           )}
         </section>
 
-        <div
+        <section
           data-t05-change="web-group-selector"
           data-t05-review="group-selector"
-          className="space-y-2 rounded-lg p-2"
+          aria-labelledby="t05-web-group-heading"
+          className={`${settingsWorkspacePanelClass(isDark)} !mt-8 sm:!mt-10 space-y-3`}
         >
-          <label className={labelClass(isDark)} htmlFor="t05-web-group">
-            {wm("t05.selectGroup")}
-          </label>
+          <h4
+            id="t05-web-group-heading"
+            className="mb-3 text-xl font-semibold leading-7 tracking-tight text-[var(--color-text-primary)] sm:text-2xl sm:leading-8"
+          >
+            <label htmlFor="t05-web-group">{wm("t05.selectGroup")}</label>
+          </h4>
           <select
             id="t05-web-group"
+            style={{ colorScheme: isDark ? "dark" : "light" }}
             value={groupId}
             onChange={(event) => {
               if (
@@ -1107,7 +1116,7 @@ export default function WebModelConnectorsTab({
             ))}
           </select>
           <p className="text-xs text-[var(--color-text-tertiary)]">{wm("t05.groupScope")}</p>
-        </div>
+        </section>
 
         <section className={settingsWorkspacePanelClass(isDark)}>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
