@@ -2198,3 +2198,38 @@ fn old_false_escalation_cannot_leave_an_undelivered_handoff_waiting_for_user() {
         "a later receipt retroactively legitimized the old false escalation"
     );
 }
+
+#[test]
+fn delayed_report_completion_never_completes_a_newer_task_for_the_same_member() {
+    let fixture = Fixture::new("late report does not own new work");
+    let old = fixture.task("Original assignment", "worker-a");
+    ContextStore::new(fixture.home.clone())
+        .expect("contexts")
+        .sync(
+            &fixture.group.group_id,
+            &[json!({"op":"task.move","task_id":old,"status":"done"})
+                .as_object()
+                .cloned()
+                .expect("move")],
+            None,
+            "web-lead",
+            false,
+        )
+        .expect("original task finished before delayed delivery");
+    let mut dispatch = Event::new("chat.message", &fixture.group.group_id);
+    dispatch.by = "web-lead".into();
+    dispatch.data=json!({"to":["worker-a"],"message_mode":"send","text":"Do original task","refs":[{"kind":"task_ref","task_id":old}]}).as_object().cloned().expect("dispatch");
+    ledger::append(&fixture.path(), &dispatch).expect("dispatch event");
+    let mut report = Event::new("chat.message", &fixture.group.group_id);
+    report.by = "worker-a".into();
+    report.data=json!({"to":["web-lead"],"message_mode":"send","text":"Original result","reply_to":dispatch.id}).as_object().cloned().expect("report");
+    ledger::append(&fixture.path(), &report).expect("report event");
+    fixture.handoff(&report, "old-turn");
+    let newer = fixture.task("New assignment after the report", "worker-a");
+    let error = fixture
+        .decide(json!({"event_ids":[report.id],"decision":"complete"}))
+        .expect_err("whole-group completion must not silently complete the newer assignment");
+    assert_eq!(error.code, "relay_work_remains");
+    assert_eq!(task(&fixture.context(), &old)["status"], "done");
+    assert_eq!(task(&fixture.context(), &newer)["status"], "active");
+}

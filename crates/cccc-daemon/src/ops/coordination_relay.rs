@@ -333,7 +333,8 @@ fn decide_locked(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
         &decision,
         &request_fingerprint,
     )?;
-    let source_task_ids = source_task_ids(request, &sources, &handoffs, &initial_document)?;
+    let source_task_ids =
+        source_task_ids(request, &sources, &handoffs, &initial_document, &events)?;
     let mut next_task_id = String::new();
     let mut visible_event_id = String::new();
 
@@ -2027,6 +2028,7 @@ fn source_task_ids(
     sources: &[Event],
     handoffs: &[Event],
     document: &ContextDoc,
+    events: &[Event],
 ) -> Result<Vec<String>, OpError> {
     let source_actors = handoffs
         .iter()
@@ -2042,6 +2044,21 @@ fn source_task_ids(
             .iter()
             .flat_map(|handoff| event_string_list(handoff, "task_ids")),
     );
+    // Resolve the original assignment before considering any current worker task.
+    for source in sources {
+        if let Some(parent) = source
+            .data
+            .get("reply_to")
+            .and_then(Value::as_str)
+            .and_then(|id| events.iter().find(|event| event.id == id))
+        {
+            referenced.extend(task_ids_from_events(std::slice::from_ref(parent)));
+        }
+    }
+    let report_at = sources
+        .iter()
+        .filter_map(|event| DateTime::parse_from_rfc3339(&event.ts).ok())
+        .min();
     if let Some(task_id) = string_arg(request, "task_id")
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
@@ -2078,6 +2095,13 @@ fn source_task_ids(
         let candidates = document
             .tasks
             .iter()
+            .filter(|task| {
+                task.get("created_at")
+                    .and_then(Value::as_str)
+                    .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+                    .zip(report_at)
+                    .is_some_and(|(created, reported)| created <= reported)
+            })
             .filter(|task| {
                 !matches!(
                     task.get("status")
