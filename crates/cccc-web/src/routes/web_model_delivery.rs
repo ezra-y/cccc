@@ -309,7 +309,11 @@ async fn deliver_once(
             target
                 .pointer("/last_submission_evidence/submission_evidence")
                 .and_then(Value::as_str),
-            Some("not_sent_chat_busy" | "not_sent_composer_occupied")
+            Some(
+                "not_sent_chat_busy"
+                    | "not_sent_composer_occupied"
+                    | "not_sent_composer_unavailable"
+            )
         );
     if retained_busy_deferral {
         let statuses = daemon_call(
@@ -601,7 +605,11 @@ async fn deliver_once(
         Ok(PromptSubmissionOutcome::Deferred(browser)) => {
             let busy = matches!(
                 browser["submission_evidence"].as_str(),
-                Some("not_sent_chat_busy" | "not_sent_composer_occupied")
+                Some(
+                    "not_sent_chat_busy"
+                        | "not_sent_composer_occupied"
+                        | "not_sent_composer_unavailable"
+                )
             );
             let message = "browser model is not ready for a safe prompt submission";
             update_target(
@@ -2573,14 +2581,14 @@ mod retry_integration_tests {
             .await
             .expect("listener");
         let url = format!("http://{}/", listener.local_addr().expect("address"));
-        let app = axum::Router::new().route(
-            "/",
-            axum::routing::get(|| async {
-                axum::response::Html(
-                    "<!doctype html><html><body>Loading conversation</body></html>",
-                )
-            }),
-        );
+        let server_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let page_ready = Arc::clone(&server_ready);
+        let app = axum::Router::new().route("/", axum::routing::get(move || {
+            let ready = Arc::clone(&page_ready);
+            async move { axum::response::Html(if ready.load(Ordering::SeqCst) {
+                r#"<!doctype html><html><body><section data-testid="conversation-turn-1" data-turn-id="done"><div data-message-author-role="assistant" data-message-id="done">Finished answer</div><button data-testid="copy-turn-action-button">Copy</button></section><textarea id="prompt-textarea" placeholder="Message"></textarea><button data-testid="send-button" type="button">Send</button><script>globalThis.sends=0;document.querySelector('[data-testid="send-button"]').onclick=()=>{sends++;let n=document.createElement('div');n.dataset.messageAuthorRole='user';n.textContent=document.querySelector('textarea').value;document.body.append(n);document.querySelector('textarea').value=''}</script></body></html>"#
+            } else { "<!doctype html><html><body>Loading conversation</body></html>" }) }
+        }));
         let server = tokio::spawn(async move { axum::serve(listener, app).await });
         let operation = async {
             let call =
@@ -2625,13 +2633,13 @@ mod retry_integration_tests {
                 .await
                 .expect("composer failure");
             assert!(
-                matches!(first, DeliveryOutcome::Deferred(_)),
+                matches!(first, DeliveryOutcome::Idle),
                 "missing composer must remain retryable"
             );
             let target = load_target(&state, gid, "web").expect("state");
             assert_eq!(
                 target["last_submission_evidence"]["submission_evidence"],
-                "not_sent_before_dispatch"
+                "not_sent_composer_unavailable"
             );
             let store = GroupStore::new(home.clone()).expect("store");
             let ledger_path = store.ledger_path(gid).expect("path");
@@ -2649,11 +2657,26 @@ mod retry_integration_tests {
                 .expect("session")
                 .page
                 .clone();
-            page.evaluate(r#"document.body.innerHTML='<textarea id="prompt-textarea" placeholder="Message"></textarea><button data-testid="send-button" type="button">Send</button>';globalThis.sends=0;document.querySelector('button').onclick=()=>{sends++;let n=document.createElement('div');n.dataset.messageAuthorRole='user';n.textContent=document.querySelector('textarea').value;document.body.append(n);document.querySelector('textarea').value=''}"#).await.expect("page recovered");
-            assert!(matches!(
-                deliver_pending(&state, gid, "web").await.expect("retry"),
-                DeliveryOutcome::Submitted
-            ));
+            server_ready.store(true, Ordering::SeqCst);
+            // Only the server changes. The old tab still has no input; production
+            // recovery must reopen the same conversation without any user refresh.
+            timeout(Duration::from_secs(20), async {
+                loop {
+                    if matches!(
+                        deliver_pending(&state, gid, "web").await.expect("recover"),
+                        DeliveryOutcome::Submitted
+                    ) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                }
+            })
+            .await
+            .expect("original late report recovered");
+            assert_eq!(
+                browser.info(surface_key()).await["metadata"]["relay_recovery"]["reason"],
+                "fresh_completed_turn"
+            );
             assert!(matches!(
                 deliver_pending(&state, gid, "web")
                     .await
@@ -2714,7 +2737,7 @@ mod retry_integration_tests {
                 load_target(&state, gid, "web").expect("target")["last_delivery_event_ids"],
                 json!([report2["event"]["id"]])
             );
-            page.evaluate("document.querySelector('button').onclick=()=>{sends++;document.querySelector('textarea').value=''}")
+            page.evaluate("document.querySelector('[data-testid=send-button]').onclick=()=>{sends++;document.querySelector('textarea').value=''}")
                 .await.expect("simulate missing acknowledgement after actual click");
             call(
                 "send",

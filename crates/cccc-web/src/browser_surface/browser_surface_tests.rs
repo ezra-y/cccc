@@ -1009,6 +1009,23 @@ async fn relay_idle_probe_requires_an_empty_non_generating_composer() {
             .expect("idle evidence")
             .is_none()
     );
+    page.evaluate("document.querySelector('textarea').remove()")
+        .await
+        .expect("missing input");
+    assert!(
+        !manager
+            .relay_surface_idle("relay-idle")
+            .await
+            .expect("unready is not idle")
+    );
+    assert_eq!(
+        manager
+            .relay_surface_deferral("relay-idle")
+            .await
+            .expect("unready evidence")
+            .expect("deferred")["submission_evidence"],
+        "not_sent_composer_unavailable"
+    );
     manager.close("relay-idle").await.expect("close browser");
     server.abort();
 }

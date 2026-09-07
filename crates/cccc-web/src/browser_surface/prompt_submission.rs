@@ -221,7 +221,15 @@ impl BrowserSurfaces {
                 &existing,
             )));
         }
-        let composer = wait_for_composer(&page).await?;
+        let composer = match wait_for_composer(&page).await {
+            Ok(composer) => composer,
+            Err(error) => {
+                return Ok(PromptSubmissionOutcome::Deferred(json!({
+                    "submitted":false, "submission_evidence":"not_sent_composer_unavailable",
+                    "error":error.to_string(), "tab_url":page.url().await?.unwrap_or_default()
+                })));
+            }
+        };
         let staged = inspect_submission(&page, prompt, &needles).await?;
         if staged.running
             || staged.stop_visible
@@ -618,7 +626,10 @@ impl BrowserSurfaces {
             return Ok(false);
         }
         let snapshot = inspect_submission(&page, "__cccc_relay_idle_probe__", &[]).await?;
-        Ok(!snapshot.running && !snapshot.stop_visible && snapshot.composer_chars == 0)
+        Ok(!snapshot.running
+            && !snapshot.stop_visible
+            && snapshot.composer_chars == 0
+            && super::relay_recovery::composer_present(&page).await?)
     }
 
     pub(crate) async fn relay_surface_deferral(&self, key: &str) -> Result<Option<Value>> {
@@ -631,6 +642,8 @@ impl BrowserSurfaces {
             "not_sent_chat_busy"
         } else if snapshot.composer_chars > 0 {
             "not_sent_composer_occupied"
+        } else if !super::relay_recovery::composer_present(&page).await? {
+            "not_sent_composer_unavailable"
         } else {
             return Ok(None);
         };

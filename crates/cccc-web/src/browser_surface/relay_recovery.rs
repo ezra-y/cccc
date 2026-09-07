@@ -40,7 +40,9 @@ impl BrowserSurfaces {
     pub(crate) async fn reconcile_relay_page(&self, key: &str, owner: &str) -> Result<()> {
         let original = self.page(key).await?;
         let observed = inspect_submission(&original, "", &[]).await?;
-        if observed.composer_chars > 0 || !(observed.running || observed.stop_visible) {
+        if observed.composer_chars > 0
+            || (!(observed.running || observed.stop_visible) && composer_present(&original).await?)
+        {
             self.cancel_relay_probe(key, owner).await;
             if let Some(s) = self.sessions.lock().await.get_mut(key) {
                 s.relay_probe_after = None;
@@ -99,7 +101,7 @@ impl BrowserSurfaces {
             let result = if latest.url == probe.url
                 && latest.latest_turn_id == probe.source_turn
                 && latest.composer_chars == 0
-                && (latest.running || latest.stop_visible)
+                && (latest.running || latest.stop_visible || !composer_present(&original).await?)
             {
                 goto_dom_content_loaded(&original, &probe.url).await
             } else {
@@ -144,11 +146,7 @@ pub(super) async fn completed_turn(page: &Page, expected_url: &str) -> Result<Op
     {
         return Ok(None);
     }
-    let input: Value = page
-        .evaluate(format!("({SELECT_COMPOSER_SCRIPT})()"))
-        .await?
-        .into_value()?;
-    if input["selector"].as_str().is_none_or(str::is_empty) {
+    if !composer_present(page).await? {
         return Ok(None);
     }
     // An empty/loading page or an earlier completed answer is not a finished turn.
@@ -160,4 +158,12 @@ pub(super) async fn completed_turn(page: &Page, expected_url: &str) -> Result<Op
         return {turn_id:answer.getAttribute('data-message-id') || last.getAttribute('data-turn-id') || null};
     })()"#).await?.into_value().context("read fresh completed conversation turn")?;
     Ok(result["turn_id"].as_str().map(str::to_owned))
+}
+
+pub(super) async fn composer_present(page: &Page) -> Result<bool> {
+    let input: Value = page
+        .evaluate(format!("({SELECT_COMPOSER_SCRIPT})()"))
+        .await?
+        .into_value()?;
+    Ok(input["selector"].as_str().is_some_and(|s| !s.is_empty()))
 }

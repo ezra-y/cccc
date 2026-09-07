@@ -722,6 +722,11 @@ fn deferred_action(evidence: &str) -> (&'static str, &'static str, &'static str)
             "Wait for the current reply",
             "ChatGPT is still responding. The queued report will resume when this reply ends.",
         ),
+        "not_sent_composer_unavailable" => (
+            "inspect_browser",
+            "Restoring the conversation",
+            "The ChatGPT input did not load. The original report is retained while the same conversation is rechecked.",
+        ),
         "not_sent_login_required" => (
             "login_chatgpt",
             "Sign in to ChatGPT",
