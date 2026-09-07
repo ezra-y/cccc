@@ -5,6 +5,7 @@ mod page_recovery;
 mod profile_owner;
 mod prompt_submission;
 mod proxy;
+mod relay_recovery;
 mod system_browser;
 
 pub use interaction::{serve_socket, serve_vnc_socket};
@@ -70,6 +71,8 @@ pub(super) struct Session {
     strategy: String,
     metadata: Value,
     recover_closed_page: bool,
+    relay_probe: Option<relay_recovery::RelayProbe>,
+    relay_probe_after: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -474,6 +477,8 @@ impl BrowserSurfaces {
             strategy,
             metadata,
             recover_closed_page: matches!(mode, BrowserMode::Headless),
+            relay_probe: None,
+            relay_probe_after: None,
         };
         let state = state(&session);
         self.sessions.lock().await.insert(key.into(), session);

@@ -55,14 +55,15 @@ struct RequestSubmitResult {
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
-struct SubmissionSnapshot {
-    url: String,
+pub(super) struct SubmissionSnapshot {
+    pub(super) url: String,
     echo_found: bool,
-    running: bool,
-    stop_visible: bool,
+    pub(super) running: bool,
+    pub(super) stop_visible: bool,
     composer_exact: bool,
     composer_contains_prompt: bool,
-    composer_chars: usize,
+    pub(super) composer_chars: usize,
+    pub(super) latest_turn_id: String,
     user_message_count: usize,
     send_enabled_count: usize,
 }
@@ -486,7 +487,7 @@ impl BrowserSurfaces {
         ))
     }
 
-    async fn page(&self, key: &str) -> Result<Page> {
+    pub(super) async fn page(&self, key: &str) -> Result<Page> {
         self.sessions
             .lock()
             .await
@@ -930,7 +931,7 @@ async fn request_submit(page: &Page) -> Result<RequestSubmitResult> {
     .context("decode browser composer requestSubmit result")
 }
 
-async fn inspect_submission(
+pub(super) async fn inspect_submission(
     page: &Page,
     prompt: &str,
     needles: &[String],
@@ -1114,7 +1115,7 @@ fn with_attachment_evidence(
 // Check explicit UI authentication controls, not cookies or text inside a report.
 // ponytail: this is a DOM preflight, not proof that the account can call an MCP tool.
 // Real tool execution remains the acceptance check when ChatGPT changes its UI.
-async fn sign_in_required(page: &Page) -> Result<bool> {
+pub(super) async fn sign_in_required(page: &Page) -> Result<bool> {
     page.evaluate(SIGN_IN_REQUIRED_SCRIPT)
         .await?
         .into_value()
@@ -1135,7 +1136,7 @@ const SIGN_IN_REQUIRED_SCRIPT: &str = r#"(() => {
     });
 })()"#;
 
-const SELECT_COMPOSER_SCRIPT: &str = r#"() => {
+pub(super) const SELECT_COMPOSER_SCRIPT: &str = r#"() => {
     const markerName = 'data-cccc-web-model-composer';
     const markerValue = 'cccc-web-model-composer';
     const visible = node => {
@@ -1392,6 +1393,7 @@ const INSPECT_SUBMISSION_SCRIPT: &str = r#"payload => {
         composer_contains_prompt: composerTexts.some(containsPrompt),
         // Before selecting an input, existing visible drafts still prevent a target switch.
         composer_chars: marked ? markedText.length : Math.max(0, ...composerTexts.map(text => text.length)),
+        latest_turn_id: [...document.querySelectorAll('[data-testid^="conversation-turn"], main article')].at(-1)?.getAttribute('data-turn-id') || '',
         user_message_count: document.querySelectorAll('[data-message-author-role="user"]').length,
         send_enabled_count: safeSend.filter(node => !node.disabled
             && String(node.getAttribute('aria-disabled') || '').toLowerCase() !== 'true').length

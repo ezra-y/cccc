@@ -1012,3 +1012,96 @@ async fn relay_idle_probe_requires_an_empty_non_generating_composer() {
     manager.close("relay-idle").await.expect("close browser");
     server.abort();
 }
+
+#[tokio::test]
+async fn stale_recovery_preserves_live_drafts_and_loading_turns() {
+    require_chrome!();
+    use super::relay_recovery::completed_turn;
+    let (url, server) = local_page(r#"<!doctype html><body><textarea id="prompt-textarea" style="width:500px;height:100px"></textarea><button id="busy" aria-label="Stop streaming">Stop</button><section data-testid="conversation-turn-1" data-turn-id="running-answer"></section><script>window.originalDocument=true</script></body>"#).await;
+    let url = format!("{url}/");
+    let temp = tempfile::tempdir().expect("temp");
+    let manager = std::sync::Arc::new(BrowserSurfaces::default());
+    manager
+        .ensure_open(
+            SHARED_WEB_MODEL_KEY,
+            &temp.path().join("browser"),
+            &url,
+            800,
+            600,
+        )
+        .await
+        .expect("open");
+    let work = manager.clone();
+    let result = tokio::spawn(async move {
+        let owner = "group-a::web";
+        let original = work.page(SHARED_WEB_MODEL_KEY).await.expect("original");
+        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner).await.expect("begin check");
+        let fresh = {
+            let sessions = work.sessions.lock().await;
+            sessions.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").browser.pages().await.expect("freshness test operation")
+                .into_iter().find(|p| p.target_id() != original.target_id()).expect("temporary page")
+        };
+        for _ in 0..3 {
+            work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner).await.expect("live answer");
+        }
+        assert!(completed_turn(&fresh, &url).await.expect("freshness test operation").is_none());
+        assert!(original.evaluate("window.originalDocument === true").await.expect("freshness test operation").into_value::<bool>().expect("freshness test operation"));
+        fresh.evaluate("document.querySelector('#busy').remove()").await.expect("freshness test operation");
+        assert!(completed_turn(&fresh, &url).await.expect("freshness test operation").is_none(), "loading mistaken for done");
+        fresh.evaluate(r#"document.querySelector('section').innerHTML = '<div data-message-author-role="assistant" data-message-id="answer">Partial answer</div>'"#).await.expect("freshness test operation");
+        assert!(completed_turn(&fresh, &url).await.expect("freshness test operation").is_none(), "partial answer mistaken for done");
+        fresh.evaluate(r#"document.querySelector('section').insertAdjacentHTML('beforeend','<button data-testid="copy-turn-action-button">Copy</button>')"#).await.expect("freshness test operation");
+        assert_eq!(completed_turn(&fresh, &url).await.expect("freshness test operation").as_deref(), Some("answer"));
+        fresh.evaluate(r#"document.body.insertAdjacentHTML('beforeend','<section data-testid="conversation-turn-2" data-turn-id="new-user">New user request</section>')"#).await.expect("freshness test operation");
+        assert!(completed_turn(&fresh, &url).await.expect("freshness test operation").is_none(), "earlier answer mistaken for current completion");
+        fresh.evaluate("document.querySelectorAll('section')[1].remove()").await.expect("freshness test operation");
+        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner).await.expect("first complete observation");
+        // Human starts a draft after the fresh view completes: original stays untouched.
+        original.evaluate("document.querySelector('textarea').value='UNSENT HUMAN DRAFT'").await.expect("freshness test operation");
+        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner).await.expect("draft protection");
+        assert_eq!(original.evaluate("document.querySelector('textarea').value").await.expect("freshness test operation").into_value::<String>().expect("freshness test operation"), "UNSENT HUMAN DRAFT");
+        assert!(original.evaluate("window.originalDocument === true").await.expect("freshness test operation").into_value::<bool>().expect("freshness test operation"));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").browser.pages().await.expect("freshness test operation").len() != 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }).await.expect("Chrome confirms the temporary target has closed");
+        assert_eq!(work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").browser.pages().await.expect("freshness test operation").len(),1);
+        original.evaluate("document.querySelector('textarea').value=''").await.expect("freshness test operation");
+        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner).await.expect("freshness test operation");
+        // Another group's cleanup must not cancel this waiting group's check.
+        work.cancel_relay_probe(SHARED_WEB_MODEL_KEY, "group-b::web").await;
+        assert!(work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").relay_probe.is_some());
+        // A new turn in the original tab invalidates the older observation.
+        original.evaluate("document.querySelector('section').setAttribute('data-turn-id','new-turn')").await.expect("freshness test operation");
+        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner).await.expect("freshness test operation");
+        assert!(work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").relay_probe.is_none());
+        assert!(original.evaluate("window.originalDocument === true").await.expect("freshness test operation").into_value::<bool>().expect("freshness test operation"));
+        {
+            let mut sessions = work.sessions.lock().await;
+            sessions.get_mut(SHARED_WEB_MODEL_KEY).expect("freshness test operation").relay_probe_after = None;
+        }
+        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner).await.expect("freshness test operation");
+        {
+            let mut sessions = work.sessions.lock().await;
+            sessions.get_mut(SHARED_WEB_MODEL_KEY).expect("freshness test operation").relay_probe.as_mut().expect("freshness test operation").started =
+                std::time::Instant::now() - std::time::Duration::from_secs(31);
+        }
+        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner).await.expect("freshness test operation");
+        assert!(work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").relay_probe.is_none());
+        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner).await.expect("freshness test operation");
+        assert!(work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").relay_probe.is_none(), "repeated checks ignored cooldown");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").browser.pages().await.expect("freshness test operation").len() != 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }).await.expect("Chrome confirms the temporary target has closed");
+        assert_eq!(work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").browser.pages().await.expect("freshness test operation").len(),1);
+    }).await;
+    manager
+        .close(SHARED_WEB_MODEL_KEY)
+        .await
+        .expect("close browser");
+    server.abort();
+    result.expect("freshness guards");
+}

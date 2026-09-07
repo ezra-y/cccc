@@ -476,6 +476,7 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
         | "ambiguous" => "ambiguous",
         "failed" | "completion_conflict" => "failed",
         "submitted" => "submitted",
+        "handled" => "handled",
         "bound" => "bound",
         _ => "idle",
     };
@@ -516,6 +517,10 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
         }
     };
     let (delivery_label, delivery_reason) = match delivery_state {
+        "handled" => (
+            "Handled",
+            "The original reports were already accepted through another delivery path; no browser resubmission is needed.",
+        ),
         "pending_bind" => (
             "Binding chat",
             "Prompt was submitted; waiting for ChatGPT to assign the chat URL.",
