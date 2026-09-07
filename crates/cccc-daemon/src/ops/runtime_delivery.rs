@@ -142,7 +142,7 @@ pub fn claim_deliveries(
     with_exclusive_lock(&lock_path, || {
         let events = ledger::read_all(&ledger_path)?;
         let mut states = HashMap::new();
-        for (actor, _transport) in deliveries {
+        for (actor, transport) in deliveries {
             let state = events
                 .iter()
                 .rev()
@@ -166,7 +166,35 @@ pub fn claim_deliveries(
             if state == "claimed" {
                 return Ok((false, states));
             }
-            if state == "accepted" || (state == "ambiguous" && !force_ambiguous) {
+            let wrong_target =
+                if state == "accepted" && force_ambiguous && *transport == "web_model_browser" {
+                    let target = cccc_core::web_model_connectors::browser_target(
+                        home,
+                        &group.group_id,
+                        &actor.id,
+                    )?;
+                    let normalized =
+                        cccc_core::web_model_connectors::normalized_chatgpt_conversation_url;
+                    let expected = target["url"].as_str().and_then(normalized);
+                    let proof = &target["last_submission_evidence"];
+                    // Explicit repair of an old false receipt: both native snapshots
+                    // show another page. A normal confirmed receipt remains terminal.
+                    target["kind"] == "existing_chat"
+                        && expected.is_some()
+                        && target["last_delivery_event_ids"]
+                            .as_array()
+                            .is_some_and(|ids| ids.iter().any(|id| id == source_event_id))
+                        && proof["baseline"]["url"]
+                            .as_str()
+                            .is_some_and(|url| normalized(url) != expected)
+                        && proof["observed"]["url"]
+                            .as_str()
+                            .is_some_and(|url| normalized(url) != expected)
+                } else {
+                    false
+                };
+            if (state == "accepted" && !wrong_target) || (state == "ambiguous" && !force_ambiguous)
+            {
                 return Ok((false, states));
             }
         }
@@ -614,6 +642,57 @@ mod tests {
                     .expect("source")
                     .0,
                 "ambiguous"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_retry_repairs_only_a_proven_wrong_chat_receipt() {
+        let temp = tempfile::tempdir().expect("temp");
+        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+        let store = GroupStore::new(home.clone()).expect("store");
+        let mut group = store.create("receipt target", "").expect("group");
+        let mut actor = Actor::new("web");
+        actor.runtime = cccc_contracts::ActorRuntime::WebModel;
+        group.actors.push(actor.clone());
+        store.save(&group).expect("save");
+        let expected = "https://chatgpt.com/c/original";
+        for (baseline, observed, allowed) in [
+            (expected, expected, false),
+            (expected, "https://chatgpt.com/", false),
+            (
+                "https://chatgpt.com/",
+                "https://chatgpt.com/c/WEB:wrong",
+                true,
+            ),
+        ] {
+            cccc_core::web_model_connectors::save_browser_target(&home,&group.group_id,"web",Some(json!({
+                "kind":"existing_chat","url":expected,"last_delivery_event_ids":["report"],
+                "last_submission_evidence":{"baseline":{"url":baseline},"observed":{"url":observed}}}))).expect("proof");
+            append_state(
+                &home,
+                &group.group_id,
+                &actor.id,
+                &actor.created_at,
+                "report",
+                "web_model_browser",
+                DeliveryOutcome::Accepted,
+            )
+            .expect("old receipt");
+            assert_eq!(
+                claim(&home, &group, &actor, "report", "web_model_browser", false)
+                    .expect("normal retry"),
+                ClaimResult::Terminal("accepted".into())
+            );
+            let result = claim(&home, &group, &actor, "report", "web_model_browser", true)
+                .expect("explicit retry");
+            assert_eq!(
+                result,
+                if allowed {
+                    ClaimResult::Claimed
+                } else {
+                    ClaimResult::Terminal("accepted".into())
+                }
             );
         }
     }

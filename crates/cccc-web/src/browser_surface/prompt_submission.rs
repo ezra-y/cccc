@@ -198,6 +198,16 @@ impl BrowserSurfaces {
 
         let needles = submission_needles(prompt);
         let existing = inspect_submission(&page, prompt, &needles).await?;
+        if bound_target_changed(target_url, &existing.url) {
+            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:target_changed",
+                "not_sent_target_changed",
+                "",
+                &existing,
+                &existing,
+            )));
+        }
         if existing.echo_found {
             self.record_page_state(key, &page).await;
             return Ok(PromptSubmissionOutcome::Verified(evidence(
@@ -231,6 +241,16 @@ impl BrowserSurfaces {
             }
         };
         let staged = inspect_submission(&page, prompt, &needles).await?;
+        if bound_target_changed(target_url, &staged.url) {
+            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:target_changed",
+                "not_sent_target_changed",
+                "",
+                &staged,
+                &staged,
+            )));
+        }
         if staged.running
             || staged.stop_visible
             || (staged.composer_chars > 0 && !staged.composer_exact)
@@ -295,7 +315,7 @@ impl BrowserSurfaces {
                 .await),
             SendReadiness::Ready(probe) | SendReadiness::Missing(probe) => {
                 before_dispatch().await?;
-                let request_submit = request_submit(&page).await;
+                let request_submit = request_submit(&page, target_url).await;
                 match request_submit {
                     Ok(result) if result.unsafe_state => Ok(self
                         .classify_deferred_submission(
@@ -346,6 +366,17 @@ impl BrowserSurfaces {
                         )
                         .await),
                     Ok(_) => {
+                        let current = page.url().await.ok().flatten().unwrap_or_default();
+                        if bound_target_changed(target_url, &current) {
+                            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                                false,
+                                "none:target_changed",
+                                "not_sent_target_changed",
+                                &composer.descriptor,
+                                &baseline,
+                                &baseline,
+                            )));
+                        }
                         let action = "keyboard:Enter";
                         let press = match page.find_element(COMPOSER_SELECTOR).await {
                             Ok(input) => input.press_key("Enter").await.map(|_| ()),
@@ -411,6 +442,16 @@ impl BrowserSurfaces {
             }
         };
         self.record_page_state(key, page).await;
+        if bound_target_changed(&attempt.baseline.url, &observed.url) {
+            return PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:target_changed",
+                "not_sent_target_changed",
+                attempt.input,
+                attempt.baseline,
+                &observed,
+            ));
+        }
         if observed.echo_found {
             return PromptSubmissionOutcome::Verified(evidence(
                 true,
@@ -471,6 +512,16 @@ impl BrowserSurfaces {
         loop {
             match inspect_submission(page, prompt, needles).await {
                 Ok(snapshot) => {
+                    if bound_target_changed(&baseline.url, &snapshot.url) {
+                        return PromptSubmissionOutcome::Ambiguous(evidence(
+                            false,
+                            action,
+                            "submission_target_changed",
+                            input,
+                            baseline,
+                            &snapshot,
+                        ));
+                    }
                     if snapshot.echo_found {
                         self.record_page_state(key, page).await;
                         return PromptSubmissionOutcome::Verified(evidence(
@@ -846,6 +897,12 @@ async fn attach_compatibility_image(
     }
 }
 
+fn bound_target_changed(expected: &str, observed: &str) -> bool {
+    !expected.is_empty()
+        && (has_chatgpt_conversation_route(expected) || !is_chatgpt_url(expected))
+        && !same_page(expected, observed)
+}
+
 fn same_page(left: &str, right: &str) -> bool {
     let Ok(mut left) = reqwest::Url::parse(left) else {
         return false;
@@ -958,12 +1015,18 @@ async fn wait_for_send_control(page: &Page) -> Result<SendReadiness> {
     }
 }
 
-async fn request_submit(page: &Page) -> Result<RequestSubmitResult> {
+async fn request_submit(page: &Page, target_url: &str) -> Result<RequestSubmitResult> {
     // Recheck the actual control and invoke it in the same browser task. Native
     // coordinate clicks wait on IntersectionObserver, which may stall in a
     // background tab. A dispatch error remains ambiguous; never click twice.
+    let expected = if has_chatgpt_conversation_route(target_url) || !is_chatgpt_url(target_url) {
+        target_url
+    } else {
+        ""
+    };
+    let expected = serde_json::to_string(expected)?;
     page.evaluate(format!(
-        "({REQUEST_SUBMIT_SCRIPT})(({SELECT_SEND_CONTROL_SCRIPT})())"
+        "({REQUEST_SUBMIT_SCRIPT})({{...({SELECT_SEND_CONTROL_SCRIPT})(), expected_url:{expected}}})"
     ))
     .await
     .context("request browser composer submission")?
@@ -1332,6 +1395,10 @@ const SELECT_SEND_CONTROL_SCRIPT: &str = r#"() => {
 }"#;
 
 const REQUEST_SUBMIT_SCRIPT: &str = r#"probe => {
+    const route = value => { const u = new URL(value, location.href); u.search=''; u.hash=''; return u.href; };
+    if (probe.expected_url && route(probe.expected_url) !== route(location.href)) {
+        return {action:'none:target_changed',invoked:false,unsafe_state:true,error:'conversation target changed'};
+    }
     if (probe.running || probe.stop_visible) {
         return { action: '', invoked: false, unsafe_state: true, error: '' };
     }

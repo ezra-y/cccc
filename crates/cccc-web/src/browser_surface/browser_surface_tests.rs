@@ -1122,3 +1122,75 @@ async fn stale_recovery_preserves_live_drafts_and_loading_turns() {
     server.abort();
     result.expect("freshness guards");
 }
+
+#[tokio::test]
+async fn redirect_before_send_never_dispatches_to_another_conversation() {
+    require_chrome!();
+    let (url, server)=local_page(r#"<!doctype html><body><textarea id="prompt-textarea" placeholder="Message"></textarea><button data-testid="send-button">Send</button><script>globalThis.sends=0;document.querySelector('button').onclick=()=>{sends++;const n=document.createElement('div');n.dataset.messageAuthorRole='user';n.textContent=document.querySelector('textarea').value;document.body.append(n);document.querySelector('textarea').value='';history.replaceState({},'','/wrong-after-send')}</script></body>"#).await;
+    let url = format!("{url}/");
+    let temp = tempfile::tempdir().expect("temp");
+    let manager = BrowserSurfaces::default();
+    manager
+        .ensure_open("redirect", &temp.path().join("chrome"), &url, 800, 600)
+        .await
+        .expect("chrome");
+    let page = manager
+        .sessions
+        .lock()
+        .await
+        .get("redirect")
+        .expect("session")
+        .page
+        .clone();
+    let result = manager
+        .submit_prompt_with_attachment_before_dispatch(
+            "redirect",
+            &url,
+            "ORIGINAL_ROUTE_REPORT",
+            None,
+            "route-test",
+            || async {
+                page.evaluate("history.replaceState({},'','/wrong-before-send')")
+                    .await?;
+                Ok(())
+            },
+        )
+        .await
+        .expect("redirect check");
+    assert!(matches!(result, PromptSubmissionOutcome::Deferred(_)));
+    assert_eq!(
+        page.evaluate("globalThis.sends")
+            .await
+            .expect("counter")
+            .into_value::<u64>()
+            .expect("count"),
+        0
+    );
+    page.evaluate("history.replaceState({},'','/');document.querySelector('textarea').value=''")
+        .await
+        .expect("restore fixture route");
+    let result = manager
+        .submit_prompt_with_attachment(
+            "redirect",
+            &url,
+            "ORIGINAL_ROUTE_REPORT",
+            None,
+            "route-test",
+        )
+        .await
+        .expect("post-click change");
+    assert!(
+        matches!(result, PromptSubmissionOutcome::Ambiguous(_)),
+        "a different conversation was treated as the target receipt"
+    );
+    assert_eq!(
+        page.evaluate("globalThis.sends")
+            .await
+            .expect("counter")
+            .into_value::<u64>()
+            .expect("count"),
+        1
+    );
+    manager.close("redirect").await.expect("close");
+    server.abort();
+}
