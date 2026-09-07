@@ -284,6 +284,20 @@ async fn deliver_once(
     }
     let target = load_target(state, group_id, actor_id)?;
     let target_url = target["url"].as_str().unwrap_or("");
+    if target["last_delivery_status"] == "preparing" {
+        return retry_unsubmitted_turn(
+            state,
+            group_id,
+            actor_id,
+            DeliveryAttempt {
+                turn_id: required(&target, "last_delivery_turn_id")?,
+                event_ids: target["last_delivery_event_ids"].clone(),
+                delivery_id: required(&target, "last_delivery_id")?,
+            },
+            "browser preparation was interrupted before any Send action",
+        )
+        .await;
+    }
     if target["last_delivery_status"] != "deferred" {
         state
             .browser_surfaces
@@ -518,6 +532,17 @@ async fn deliver_once(
     let turn = &wait["turn"];
     let turn_id = required(turn, "turn_id")?;
     let delivery_id = browser_delivery_id(actor_id, turn_id);
+    update_target(
+        state,
+        group_id,
+        actor_id,
+        json!({
+            "last_delivery_id":delivery_id, "last_delivery_turn_id":turn_id,
+            "last_delivery_event_ids":turn["event_ids"], "last_delivery_status":"preparing",
+            "last_delivery_started_at":cccc_contracts::utc_now(),
+            "last_submission_evidence":null, "last_error":""
+        }),
+    )?;
     let event_label = turn["event_ids"]
         .as_array()
         .into_iter()
@@ -534,32 +559,41 @@ async fn deliver_once(
         &event_label,
     )?;
     let attachment = compatibility_attachment(state, turn, &delivery_id)?;
-    update_target(
-        state,
-        group_id,
-        actor_id,
-        json!({"last_delivery_id":delivery_id,"last_delivery_turn_id":turn_id,"last_delivery_event_ids":turn["event_ids"],"last_delivery_status":"submitting","last_delivery_started_at":cccc_contracts::utc_now(),"last_error":""}),
-    )?;
-    record_delivery(
-        state,
-        group_id,
-        actor_id,
-        turn_id,
-        turn["event_ids"].clone(),
-        &delivery_id,
-        "submitting",
-        "",
-        json!({"target_url":target_url,"auto_bind_new_chat":target["kind"] == "new_chat"}),
-    )
-    .await?;
     let submitted = state
         .browser_surfaces
-        .submit_prompt_with_attachment(
+        .submit_prompt_with_attachment_before_dispatch(
             session_key,
             target_url,
             &browser_prompt,
             attachment.as_deref(),
             &delivery_id,
+            || async {
+                if !super::web_model_supervisor::actor_delivery_enabled(state, group_id, actor_id) {
+                    return Err(anyhow::anyhow!("actor stopped during browser preparation"));
+                }
+                // The durable fence belongs immediately before Send/Enter, not navigation.
+                update_target(
+                    state,
+                    group_id,
+                    actor_id,
+                    json!({"last_delivery_status":"submitting"}),
+                )
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                record_delivery(
+                    state,
+                    group_id,
+                    actor_id,
+                    turn_id,
+                    turn["event_ids"].clone(),
+                    &delivery_id,
+                    "submitting",
+                    "",
+                    json!({"target_url":target_url,
+                    "auto_bind_new_chat":target["kind"] == "new_chat"}),
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))
+            },
         )
         .await;
     let browser = match submitted {
@@ -645,15 +679,7 @@ async fn deliver_once(
             return Ok(DeliveryOutcome::Stopped);
         }
         Err(error) => {
-            let message = format!(
-                "browser delivery failed after its at-most-once dispatch fence: {error}; this message will not be redelivered automatically"
-            );
-            let evidence = json!({
-                "submitted":false,
-                "submission_evidence":"browser_error_after_dispatch_fence",
-                "error":error.to_string()
-            });
-            return complete_ambiguous_attempt(
+            return retry_unsubmitted_turn(
                 state,
                 group_id,
                 actor_id,
@@ -662,8 +688,7 @@ async fn deliver_once(
                     event_ids: turn["event_ids"].clone(),
                     delivery_id: &delivery_id,
                 },
-                evidence,
-                &message,
+                &error.to_string(),
             )
             .await;
         }
@@ -824,6 +849,48 @@ async fn deliver_once(
         .await?;
     }
     Ok(DeliveryOutcome::Submitted)
+}
+
+// Reuse the native failed-delivery transition: it releases this exact reservation,
+// leaves the original message intact, and never acknowledges it as received.
+async fn retry_unsubmitted_turn(
+    state: &AppState,
+    group_id: &str,
+    actor_id: &str,
+    attempt: DeliveryAttempt<'_>,
+    error: &str,
+) -> Result<DeliveryOutcome, ApiError> {
+    record_delivery(
+        state,
+        group_id,
+        actor_id,
+        attempt.turn_id,
+        attempt.event_ids,
+        attempt.delivery_id,
+        "failed",
+        error,
+        json!({}),
+    )
+    .await?;
+    update_target(
+        state,
+        group_id,
+        actor_id,
+        json!({
+            "last_delivery_status":"deferred", "last_error":error,
+            "last_submission_evidence":{"submitted":false,
+                "submission_evidence":"not_sent_before_dispatch", "error":error}
+        }),
+    )?;
+    record_connector(
+        state,
+        group_id,
+        actor_id,
+        "deferred",
+        attempt.turn_id,
+        error,
+    )?;
+    Ok(DeliveryOutcome::Deferred(attempt.turn_id.to_owned()))
 }
 
 async fn complete_ambiguous_attempt(
@@ -1788,8 +1855,17 @@ mod retry_integration_tests {
                 })
                 .count();
             assert_eq!(
-                attempts, 1,
-                "duplicate worker admissions bypassed the existing idle retry interval"
+                attempts, 0,
+                "draft protection must not cross the Send boundary"
+            );
+            assert_eq!(
+                log.iter()
+                    .filter(|event| event.kind == "runtime.delivery"
+                        && event.data["source_event_id"] == final_id
+                        && event.data["state"] == "claimed")
+                    .count(),
+                1,
+                "duplicate worker admissions reclaimed the same source"
             );
             assert_eq!(count.load(Ordering::SeqCst), 20, "draft was overwritten");
             browser
@@ -2345,9 +2421,21 @@ mod retry_integration_tests {
                     .filter(|event| event.kind == "web_model.browser_delivery.submitting")
                     .count();
                 assert_eq!(
-                    attempts, 1,
-                    "repeated admission bypassed the polling owner in {gid}"
+                    attempts, 0,
+                    "group {gid} crossed Send while a draft was present"
                 );
+                for (_, id, _) in sources.iter().filter(|(group, _, _)| group == gid) {
+                    assert_eq!(
+                        events
+                            .iter()
+                            .filter(|event| event.kind == "runtime.delivery"
+                                && event.data["source_event_id"] == *id
+                                && event.data["state"] == "claimed")
+                            .count(),
+                        1,
+                        "repeated admission reclaimed {id} in {gid}"
+                    );
+                }
             }
             assert!(
                 records.lock().expect("records").is_empty(),
@@ -2448,5 +2536,225 @@ mod retry_integration_tests {
         result
             .expect("test assertions")
             .expect("bounded two-group flow");
+    }
+
+    #[tokio::test]
+    async fn composer_failure_retries_original_report_without_a_false_receipt() {
+        if crate::system_browser_path().is_none() {
+            return;
+        }
+        let temp = tempfile::tempdir().expect("isolated home");
+        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+        home.initialize().expect("initialize");
+        let (shutdown, _) = tokio::sync::broadcast::channel(1);
+        let (_, _, browser, state) = crate::app_with_shutdown(
+            home.clone(),
+            shutdown.clone(),
+            crate::WebMode::Normal,
+            None,
+            crate::LiveBinding {
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
+            "presend".into(),
+        );
+        let daemon_home = home.clone();
+        let daemon = tokio::spawn(async move { cccc_daemon::run(daemon_home).await });
+        for _ in 0..100 {
+            if daemon_call(&state, "ping", Default::default())
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let url = format!("http://{}/", listener.local_addr().expect("address"));
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::get(|| async {
+                axum::response::Html(
+                    "<!doctype html><html><body>Loading conversation</body></html>",
+                )
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let operation = async {
+            let call =
+                |op, args: Value| daemon_call(&state, op, args.as_object().cloned().expect("args"));
+            let g = call("group_create", json!({"title":"pre-send recovery"}))
+                .await
+                .expect("group");
+            let gid = g["group"]["group_id"].as_str().expect("gid");
+            call(
+                "actor_add",
+                json!({"group_id":gid,"actor_id":"web","runtime":"web_model","by":"user",
+                "env":{"CCCC_WEB_MODEL_DELIVERY_MODE":"browser"}}),
+            )
+            .await
+            .expect("actor");
+            call(
+                "actor_start",
+                json!({"group_id":gid,"actor_id":"web","by":"user"}),
+            )
+            .await
+            .expect("start");
+            web_model_connectors::save_browser_target(
+                &home,
+                gid,
+                "web",
+                Some(json!({"kind":"existing_chat","url":url})),
+            )
+            .expect("target");
+            let report = call("send",json!({"group_id":gid,"by":"user","to":["web"],"text":"ORIGINAL_PRESEND_REPORT","message_mode":"mail"})).await.expect("report");
+            let id = report["event"]["id"].as_str().expect("id");
+            call(
+                "message_deliver",
+                json!({"group_id":gid,"by":"user","source_event_id":id,"actor_ids":["web"]}),
+            )
+            .await
+            .expect("promote");
+            browser
+                .ensure_open(surface_key(), &temp.path().join("chrome"), &url, 800, 600)
+                .await
+                .expect("chrome");
+            let first = deliver_pending(&state, gid, "web")
+                .await
+                .expect("composer failure");
+            assert!(
+                matches!(first, DeliveryOutcome::Deferred(_)),
+                "missing composer must remain retryable"
+            );
+            let target = load_target(&state, gid, "web").expect("state");
+            assert_eq!(
+                target["last_submission_evidence"]["submission_evidence"],
+                "not_sent_before_dispatch"
+            );
+            let store = GroupStore::new(home.clone()).expect("store");
+            let ledger_path = store.ledger_path(gid).expect("path");
+            let events = ledger::read_all(&ledger_path).expect("events");
+            assert!(
+                !events.iter().any(|e| e.kind == "runtime.turn.completed"
+                    || e.kind == "web_model.browser_delivery.submitting"),
+                "preparation crossed the send fence"
+            );
+            let page = browser
+                .sessions
+                .lock()
+                .await
+                .get(surface_key())
+                .expect("session")
+                .page
+                .clone();
+            page.evaluate(r#"document.body.innerHTML='<textarea id="prompt-textarea" placeholder="Message"></textarea><button data-testid="send-button" type="button">Send</button>';globalThis.sends=0;document.querySelector('button').onclick=()=>{sends++;let n=document.createElement('div');n.dataset.messageAuthorRole='user';n.textContent=document.querySelector('textarea').value;document.body.append(n);document.querySelector('textarea').value=''}"#).await.expect("page recovered");
+            assert!(matches!(
+                deliver_pending(&state, gid, "web").await.expect("retry"),
+                DeliveryOutcome::Submitted
+            ));
+            assert!(matches!(
+                deliver_pending(&state, gid, "web")
+                    .await
+                    .expect("duplicate poll"),
+                DeliveryOutcome::Idle
+            ));
+            assert_eq!(
+                page.evaluate("globalThis.sends")
+                    .await
+                    .expect("counter")
+                    .into_value::<u64>()
+                    .expect("count"),
+                1
+            );
+            let events = ledger::read_all(&ledger_path).expect("final events");
+            assert_eq!(
+                events.iter().filter(|e| e.kind == "chat.message").count(),
+                1,
+                "report was replaced"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e.kind == "runtime.delivery"
+                        && e.data["source_event_id"] == id
+                        && e.data["state"] == "accepted")
+                    .count(),
+                1
+            );
+            let report2 = call(
+                "send",
+                json!({"group_id":gid,"by":"user","to":["web"],
+                "text":"RESTART_PREPARING","message_mode":"send"}),
+            )
+            .await
+            .expect("restart report");
+            let wait = call(
+                "runtime_wait_next_turn",
+                Value::Object(browser_wait_args(gid, "web")),
+            )
+            .await
+            .expect("reserve");
+            assert_eq!(wait["status"], "work_available");
+            let turn = &wait["turn"];
+            update_target(&state,gid,"web",json!({"last_delivery_status":"preparing",
+                "last_delivery_turn_id":turn["turn_id"],"last_delivery_event_ids":turn["event_ids"],
+                "last_delivery_id":browser_delivery_id("web",turn["turn_id"].as_str().expect("turn")),
+                "last_submission_evidence":null})).expect("persist pre-send interruption");
+            assert!(matches!(
+                deliver_pending(&state, gid, "web").await.expect("release"),
+                DeliveryOutcome::Deferred(_)
+            ));
+            assert!(matches!(
+                deliver_pending(&state, gid, "web").await.expect("retry"),
+                DeliveryOutcome::Submitted
+            ));
+            assert_eq!(
+                load_target(&state, gid, "web").expect("target")["last_delivery_event_ids"],
+                json!([report2["event"]["id"]])
+            );
+            page.evaluate("document.querySelector('button').onclick=()=>{sends++;document.querySelector('textarea').value=''}")
+                .await.expect("simulate missing acknowledgement after actual click");
+            call(
+                "send",
+                json!({"group_id":gid,"by":"user","to":["web"],
+                "text":"CLICK_WITHOUT_RECEIPT","message_mode":"send"}),
+            )
+            .await
+            .expect("uncertain report");
+            assert!(matches!(
+                deliver_pending(&state, gid, "web").await.expect("send"),
+                DeliveryOutcome::Ambiguous
+            ));
+            let _ = deliver_pending(&state, gid, "web")
+                .await
+                .expect("duplicate poll");
+            assert_eq!(
+                page.evaluate("globalThis.sends")
+                    .await
+                    .expect("counter")
+                    .into_value::<u64>()
+                    .expect("count"),
+                3
+            );
+            assert_eq!(
+                load_target(&state, gid, "web").expect("target")["last_delivery_status"],
+                "submission_ambiguous"
+            );
+        };
+        let result = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(timeout(
+            Duration::from_secs(60),
+            operation,
+        )))
+        .await;
+        let _ = browser.close(surface_key()).await;
+        let _ = shutdown.send(());
+        let _ = daemon_call(&state, "shutdown", Default::default()).await;
+        let _ = timeout(Duration::from_secs(5), daemon).await;
+        server.abort();
+        result
+            .expect("pre-send assertions")
+            .expect("bounded pre-send test");
     }
 }

@@ -468,7 +468,7 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
     let last_error = target["last_error"].as_str().unwrap_or("");
     let delivery_state = match internal_delivery_status {
         "pending_new_chat_bind" => "pending_bind",
-        "submitting" | "deferred" | "legacy_recovery_submitting" => "submitting",
+        "preparing" | "submitting" | "deferred" | "legacy_recovery_submitting" => "submitting",
         "submission_ambiguous"
         | "submission_ambiguous_completion_pending"
         | "completion_ambiguous"

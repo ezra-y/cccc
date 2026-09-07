@@ -1247,6 +1247,33 @@ fn reconcile_escalated_handoffs(
             .and_then(Value::as_str)
             .unwrap_or_default();
         let Some(escalation) = escalation_event_for_handoff(events, handoff_id) else {
+            let contexts = ContextStore::new(home.clone()).map_err(OpError::io)?;
+            let context = contexts.load(&group.group_id).map_err(OpError::io)?;
+            let invalid_note = context
+                .coordination
+                .get("recent_handoffs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find(|note| {
+                    note["id"] == handoff_id
+                        && note["status"] == "waiting_user"
+                        && note["escalation_event_id"]
+                            .as_str()
+                            .is_some_and(|id| !id.is_empty())
+                })
+                .and_then(Value::as_object);
+            if let Some(note) = invalid_note {
+                let mut repair = note.clone();
+                repair.insert("op".into(), json!("coordination.relay.note"));
+                repair.insert("kind".into(), json!("handoff"));
+                repair.insert("status".into(), json!("pending_review"));
+                repair.insert("escalation_event_id".into(), Value::Null);
+                let result = contexts
+                    .sync(&group.group_id, &[repair], None, &handoff.by, false)
+                    .map_err(OpError::invalid)?;
+                append_context_event(home, &group.group_id, &handoff.by, &result)?;
+            }
             continue;
         };
         ensure_handoff_note(
@@ -1821,11 +1848,11 @@ fn delivered_at(
                 && event.data.get("actor_id").and_then(Value::as_str) == Some(actor_id)
                 && event.data.get("source_event_id").and_then(Value::as_str)
                     == Some(source_event_id)
-                && matches!(
-                    event.data.get("state").and_then(Value::as_str),
-                    Some("accepted" | "ambiguous")
-                )
         })?;
+        // Ambiguous protects against duplicate sends; it is not evidence of receipt.
+        if event.data.get("state").and_then(Value::as_str) != Some("accepted") {
+            return None;
+        }
         let at = DateTime::parse_from_rfc3339(&event.ts)
             .ok()?
             .with_timezone(&Utc);
@@ -1850,18 +1877,32 @@ fn reminder_event_for_handoff<'a>(events: &'a [Event], handoff_id: &str) -> Opti
 }
 
 fn escalation_event_for_handoff<'a>(events: &'a [Event], handoff_id: &str) -> Option<&'a Event> {
-    events.iter().rev().find(|event| {
-        event.kind == "chat.message"
-            && event.data.get("relay_kind").and_then(Value::as_str) == Some("decision_escalation")
-            && event
-                .data
-                .get("relay_handoff_ids")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .any(|id| id == handoff_id)
-    })
+    events
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(position, event)| {
+            if event.kind != "chat.message"
+                || event.data.get("relay_kind").and_then(Value::as_str)
+                    != Some("decision_escalation")
+                || !event_string_list(event, "relay_handoff_ids")
+                    .iter()
+                    .any(|id| id == handoff_id)
+            {
+                return None;
+            }
+            // Evaluate receipt evidence as it existed when this escalation was written.
+            let preceding = &events[..position];
+            let actor = event.data.get("relay_actor_id")?.as_str()?;
+            delivered_at(
+                preceding,
+                actor,
+                &event_string_list(event, "relay_source_event_ids"),
+            )?;
+            let reminder = reminder_event_for_handoff(preceding, handoff_id)?;
+            delivered_at(preceding, actor, std::slice::from_ref(&reminder.id))?;
+            Some(event)
+        })
 }
 
 fn escalation_for_handoff(events: &[Event], handoff_id: &str) -> bool {

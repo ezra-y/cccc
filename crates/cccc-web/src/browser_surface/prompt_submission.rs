@@ -120,6 +120,32 @@ impl BrowserSurfaces {
         attachment_path: Option<&Path>,
         delivery_id: &str,
     ) -> Result<PromptSubmissionOutcome> {
+        self.submit_prompt_with_attachment_before_dispatch(
+            key,
+            target_url,
+            prompt,
+            attachment_path,
+            delivery_id,
+            || async { Ok(()) },
+        )
+        .await
+    }
+
+    // Err means no Send/Enter action was attempted. Once dispatch starts, all
+    // uncertain outcomes are returned as Ambiguous, never as a retryable error.
+    pub(crate) async fn submit_prompt_with_attachment_before_dispatch<F, Fut>(
+        &self,
+        key: &str,
+        target_url: &str,
+        prompt: &str,
+        attachment_path: Option<&Path>,
+        delivery_id: &str,
+        before_dispatch: F,
+    ) -> Result<PromptSubmissionOutcome>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
         if prompt.trim().is_empty() {
             bail!("browser prompt is empty");
         }
@@ -260,6 +286,7 @@ impl BrowserSurfaces {
                 )
                 .await),
             SendReadiness::Ready(probe) | SendReadiness::Missing(probe) => {
+                before_dispatch().await?;
                 let request_submit = request_submit(&page).await;
                 match request_submit {
                     Ok(result) if result.unsafe_state => Ok(self

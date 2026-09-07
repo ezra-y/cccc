@@ -1778,6 +1778,23 @@ fn status_repairs_the_context_note_after_an_escalation_write_is_interrupted() {
     let report = fixture.report("worker-a", "The result needs human intervention.", None);
     let handoff = fixture.handoff(&report, "turn-escalation-recovery");
     let handoff_id = handoff.data["handoff_id"].as_str().expect("handoff id");
+    let reminder = send_decision_reminder(
+        &fixture.home,
+        &fixture.group.group_id,
+        "web-lead",
+        &fixture.events(),
+        std::slice::from_ref(&handoff),
+    )
+    .expect("reminder");
+    for id in [&report.id, &reminder.id] {
+        let mut delivery = Event::new("runtime.delivery", &fixture.group.group_id);
+        delivery.data = json!({"actor_id":"web-lead","source_event_id":id,
+            "state":"accepted","transport":"web_model_browser"})
+        .as_object()
+        .cloned()
+        .expect("delivery");
+        ledger::append(&fixture.path(), &delivery).expect("confirmed receipt");
+    }
     let mut escalation = Event::new("chat.message", &fixture.group.group_id);
     escalation.by = "system".into();
     escalation.data = json!({
@@ -2066,5 +2083,118 @@ fn recording_wait_during_a_paused_active_turn_does_not_report_a_false_failure() 
             .expect("group")
             .state,
         GroupState::Paused
+    );
+}
+
+#[test]
+fn unconfirmed_delivery_never_claims_the_foreman_received_a_report_or_reminder() {
+    let fixture = Fixture::new("unconfirmed transport is not receipt");
+    let report = fixture.report("worker-a", "Original report", None);
+    fixture.handoff(&report, "unconfirmed-turn");
+    let append = |id: &str, state: &str| {
+        let mut e = Event::new("runtime.delivery", &fixture.group.group_id);
+        e.ts = (Utc::now() - Duration::seconds(180)).to_rfc3339();
+        e.by = "system".into();
+        e.data = json!({"actor_id":"web-lead","source_event_id":id,
+            "state":state,"transport":"web_model_browser"})
+        .as_object()
+        .cloned()
+        .expect("data");
+        ledger::append(&fixture.path(), &e).expect("delivery");
+    };
+    let request = DaemonRequest { v:1, op:"coordination_relay_remind".into(),
+        args:json!({"group_id":fixture.group.group_id,"actor_id":"web-lead","by":"web-lead","browser_idle":true})
+            .as_object().cloned().expect("args") };
+    for state in ["claimed", "failed", "ambiguous"] {
+        append(&report.id, state);
+        let r = remind_due(&fixture.home, &request).expect("check undelivered report");
+        assert_eq!(r["reminded"], false, "{state} was misreported as delivered");
+        assert_eq!(r["escalated"], false);
+    }
+    append(&report.id, "accepted");
+    let r = remind_due(&fixture.home, &request).expect("confirmed report");
+    assert_eq!(r["reminded"], true);
+    let reminder = r["reminder_event"]["id"].as_str().expect("reminder");
+    for state in ["claimed", "failed", "ambiguous"] {
+        append(reminder, state);
+        assert_eq!(
+            remind_due(&fixture.home, &request).expect("unconfirmed reminder")["escalated"],
+            false,
+            "{state} reminder was blamed on the foreman"
+        );
+    }
+    append(reminder, "accepted");
+    assert_eq!(
+        remind_due(&fixture.home, &request).expect("confirmed reminder")["escalated"],
+        true
+    );
+}
+
+#[test]
+fn old_false_escalation_cannot_leave_an_undelivered_handoff_waiting_for_user() {
+    let fixture = Fixture::new("repair old false escalation");
+    let report = fixture.report("worker-a", "Original still not delivered", None);
+    let handoff = fixture.handoff(&report, "old-bad-delivery");
+    let reminder = send_decision_reminder(
+        &fixture.home,
+        &fixture.group.group_id,
+        "web-lead",
+        &fixture.events(),
+        std::slice::from_ref(&handoff),
+    )
+    .expect("old reminder");
+    let append = |state: &str| {
+        for id in [&report.id, &reminder.id] {
+            let mut e = Event::new("runtime.delivery", &fixture.group.group_id);
+            e.data = json!({"actor_id":"web-lead","source_event_id":id,
+                "state":state,"transport":"web_model_browser"})
+            .as_object()
+            .cloned()
+            .expect("data");
+            ledger::append(&fixture.path(), &e).expect("delivery");
+        }
+    };
+    append("ambiguous");
+    let escalation = send_user_escalation(
+        &fixture.home,
+        &fixture.group.group_id,
+        "web-lead",
+        &fixture.events(),
+        std::slice::from_ref(&handoff),
+    )
+    .expect("old erroneous escalation");
+    ensure_handoff_note(
+        &fixture.home,
+        &fixture.group,
+        &handoff,
+        "waiting_user",
+        None,
+        Some(&escalation.id),
+    )
+    .expect("old note");
+    let request = DaemonRequest {
+        v: 1,
+        op: "coordination_relay_status".into(),
+        args: json!({
+        "group_id":fixture.group.group_id,"actor_id":"web-lead","by":"web-lead"})
+        .as_object()
+        .cloned()
+        .expect("args"),
+    };
+    assert_eq!(
+        status(&fixture.home, &request).expect("current status")["awaiting_user_intervention"],
+        false
+    );
+    assert_eq!(
+        fixture.context().coordination["recent_handoffs"][0]["status"],
+        "pending_review"
+    );
+    append("accepted");
+    assert!(
+        !escalation_for_handoff(
+            &fixture.events(),
+            handoff.data["handoff_id"].as_str().expect("handoff")
+        ),
+        "a later receipt retroactively legitimized the old false escalation"
     );
 }
