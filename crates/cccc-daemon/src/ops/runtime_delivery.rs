@@ -250,6 +250,15 @@ pub fn settle_stranded_claims(home: &HomeLayout, group: &GroupDoc) -> Result<usi
             if state != "claimed" {
                 continue;
             }
+            let target = if transport == "web_model_browser" {
+                cccc_core::web_model_connectors::browser_target(home, &group.group_id, &actor.id)?
+            } else {
+                Value::Null
+            };
+            let preparing = target["last_delivery_status"] == "preparing"
+                && target["last_delivery_event_ids"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == &source_event_id));
             append_state(
                 home,
                 &group.group_id,
@@ -257,9 +266,15 @@ pub fn settle_stranded_claims(home: &HomeLayout, group: &GroupDoc) -> Result<usi
                 &actor.created_at,
                 &source_event_id,
                 &transport,
-                DeliveryOutcome::Ambiguous(
-                    "daemon restarted before the claimed handoff recorded an outcome",
-                ),
+                if preparing {
+                    DeliveryOutcome::Failed(
+                        "daemon restarted during browser preparation before Send",
+                    )
+                } else {
+                    DeliveryOutcome::Ambiguous(
+                        "daemon restarted before the claimed handoff recorded an outcome",
+                    )
+                },
             )
             .map_err(|error| std::io::Error::other(error.message))?;
             settled += 1;
@@ -554,5 +569,52 @@ mod tests {
             latest_state(&home, &group.group_id, "peer1", "source-1").expect("first state"),
             None
         );
+    }
+
+    #[test]
+    fn restart_preserves_preparing_sources_but_not_attempted_sends() {
+        for phase in ["preparing", "submitting"] {
+            let temp = tempfile::tempdir().expect("temp");
+            let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+            let store = GroupStore::new(home.clone()).expect("store");
+            let mut group = store.create("restart phase", "").expect("group");
+            let mut actor = Actor::new("web");
+            actor.runtime = cccc_contracts::ActorRuntime::WebModel;
+            group.actors.push(actor.clone());
+            store.save(&group).expect("actor");
+            cccc_core::web_model_connectors::save_browser_target(
+                &home,
+                &group.group_id,
+                "web",
+                Some(json!({
+                "last_delivery_status":phase,"last_delivery_event_ids":["source-1"]})),
+            )
+            .expect("phase");
+            for id in ["source-1", "unrelated-source"] {
+                assert_eq!(
+                    claim(&home, &group, &actor, id, "web_model_browser", false).expect("claim"),
+                    ClaimResult::Claimed
+                );
+            }
+            assert_eq!(settle_stranded_claims(&home, &group).expect("restart"), 2);
+            assert_eq!(
+                latest_state(&home, &group.group_id, "web", "source-1")
+                    .expect("state")
+                    .expect("source")
+                    .0,
+                if phase == "preparing" {
+                    "failed"
+                } else {
+                    "ambiguous"
+                }
+            );
+            assert_eq!(
+                latest_state(&home, &group.group_id, "web", "unrelated-source")
+                    .expect("state")
+                    .expect("source")
+                    .0,
+                "ambiguous"
+            );
+        }
     }
 }

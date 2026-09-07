@@ -208,7 +208,26 @@ async fn fresh_turn_after_exhaustion(
         browser_wait_args(group_id, actor_id),
     )
     .await?;
-    Ok(replacement_turn_id(exhausted_turn_id, &wait))
+    let replacement = replacement_turn_id(exhausted_turn_id, &wait);
+    if replacement.is_none() && wait["status"] == "work_available" {
+        let turn = &wait["turn"];
+        let turn_id = required(turn, "turn_id")?;
+        // wait_next_turn reserves work. A no-new-work check must release its
+        // exact reservation, otherwise manual retry and restart are both stuck.
+        record_delivery(
+            state,
+            group_id,
+            actor_id,
+            turn_id,
+            turn["event_ids"].clone(),
+            &browser_delivery_id(actor_id, turn_id),
+            "failed",
+            "automatic retry budget exhausted before Send; original report retained",
+            json!({}),
+        )
+        .await?;
+    }
+    Ok(replacement)
 }
 
 fn replacement_turn_id(exhausted_turn_id: &str, wait: &Value) -> Option<String> {
@@ -2640,6 +2659,26 @@ mod retry_integration_tests {
             assert_eq!(
                 target["last_submission_evidence"]["submission_evidence"],
                 "not_sent_composer_unavailable"
+            );
+            assert!(
+                fresh_turn_after_exhaustion(
+                    &state,
+                    gid,
+                    "web",
+                    target["last_delivery_turn_id"]
+                        .as_str()
+                        .expect("exhausted turn")
+                )
+                .await
+                .expect("budget check")
+                .is_none()
+            );
+            let status = call("ledger_statuses", json!({"group_id":gid,"event_ids":[id]}))
+                .await
+                .expect("status");
+            assert_eq!(
+                status["statuses"][id]["obligation_status"]["web"]["delivery_state"], "failed",
+                "a budget check retained a claim and disabled manual retry"
             );
             let store = GroupStore::new(home.clone()).expect("store");
             let ledger_path = store.ledger_path(gid).expect("path");
