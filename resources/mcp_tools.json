@@ -98,7 +98,12 @@
         },
         "mode": {
           "type": "string",
-          "enum": ["all", "send", "request_reply", "mail"],
+          "enum": [
+            "all",
+            "send",
+            "request_reply",
+            "mail"
+          ],
           "default": "all",
           "description": "Optional delivery-mode filter."
         },
@@ -2211,7 +2216,7 @@
   },
   {
     "name": "cccc_coordination",
-    "description": "Shared control-plane tool: action=get|update_brief|add_decision|add_handoff.",
+    "description": "Shared control-plane tool: read/update the brief, add ordinary human notes, or use decide to record machine responsibility for a completed member handoff without duplicating the original output.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2229,9 +2234,11 @@
             "get",
             "update_brief",
             "add_decision",
-            "add_handoff"
+            "add_handoff",
+            "decide"
           ],
-          "default": "get"
+          "default": "get",
+          "description": "get/update_brief read or edit shared context; add_decision/add_handoff add ordinary human notes only; decide resolves relay responsibility and suppresses duplicate browser wake-ups."
         },
         "include_archived": {
           "type": "boolean",
@@ -2256,10 +2263,81 @@
           "type": "boolean"
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "description": "Human note used by add_decision/add_handoff. Not required for decide; do not repeat the visible report or normal assistant reply here."
         },
         "task_id": {
           "type": "string"
+        },
+        "event_id": {
+          "type": "string",
+          "description": "Single source report event to resolve (alias for a one-item event_ids list)."
+        },
+        "event_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 200,
+          "description": "Exact CCCC report/reminder event IDs handled by this decision. One decision may cover a verbose member turn with multiple human-visible outputs."
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "continue",
+            "wait_user",
+            "complete",
+            "blocked"
+          ],
+          "description": "Strict machine responsibility after reviewing the exact source events. continue must create and deliver real work; wait_user, complete, and blocked record state without generating a second human-facing message."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Concrete blocking reason; required for blocked."
+        },
+        "next_actor_id": {
+          "type": "string",
+          "description": "Actor that receives the next real task; required for continue."
+        },
+        "next_title": {
+          "type": "string",
+          "description": "Human-readable title for the next durable task; required for continue."
+        },
+        "next_text": {
+          "type": "string",
+          "description": "Human-readable instructions sent to the next actor; required for continue."
+        },
+        "outcome": {
+          "type": "string",
+          "description": "Expected outcome of the next task."
+        },
+        "task_priority": {
+          "type": "string",
+          "enum": [
+            "low",
+            "normal",
+            "high",
+            "urgent"
+          ],
+          "description": "Priority of the next task."
+        },
+        "checklist": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          },
+          "description": "Optional acceptance checklist for the next task."
+        },
+        "insight": {
+          "type": "string",
+          "description": "Optional decision rationale useful to the receiving actor."
         }
       },
       "required": []

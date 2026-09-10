@@ -50,9 +50,21 @@ async fn ensure_running_actor(
 }
 
 async fn ensure_actor(state: &AppState, group_id: String, actor_id: String, event_trigger: bool) {
+    // Chat-first groups can dispatch locally before providing a return URL.
+    // Do not launch a browser or ask for sign-in until a return target is configured.
+    let Ok(target) = super::web_model_delivery_state::target(state, &group_id, &actor_id) else {
+        return;
+    };
+    if target["kind"] != "new_chat" && target["url"].as_str().is_none_or(str::is_empty) {
+        return;
+    }
     let session_key = super::web_model_browser::key(&group_id, &actor_id);
-    let surface = state.browser_surfaces.info(&session_key).await;
+    let surface = state
+        .browser_surfaces
+        .info(super::web_model_browser::surface_key())
+        .await;
     if surface["active"].as_bool().unwrap_or(false) {
+        ensure_relay_decision_reminder(state, &group_id, &actor_id).await;
         if event_trigger {
             super::web_model_delivery::ensure_worker(
                 state.clone(),
@@ -77,11 +89,31 @@ async fn ensure_actor(state: &AppState, group_id: String, actor_id: String, even
     {
         Ok(_) => {
             clear_warmup_attempt(&session_key);
+            ensure_relay_decision_reminder(state, &group_id, &actor_id).await;
             super::web_model_delivery::ensure_worker(state.clone(), group_id, actor_id).await;
         }
         Err(error) => {
             tracing::warn!(%error, group_id, actor_id, "Web-model browser warmup failed");
         }
+    }
+}
+
+async fn ensure_relay_decision_reminder(state: &AppState, group_id: &str, actor_id: &str) {
+    let browser_idle = {
+        let _operation = state.browser_surfaces.web_model_operation.lock().await;
+        state
+            .browser_surfaces
+            .relay_surface_idle(super::web_model_browser::surface_key())
+            .await
+            .unwrap_or(false)
+    };
+    let mut args = super::web_model_delivery_completion::args(group_id, actor_id);
+    args.insert("by".into(), serde_json::json!(actor_id));
+    args.insert("browser_idle".into(), serde_json::json!(browser_idle));
+    if let Err(error) =
+        super::web_model_delivery_completion::call(state, "coordination_relay_remind", args).await
+    {
+        tracing::warn!(%error, group_id, actor_id, "relay decision reminder check failed");
     }
 }
 

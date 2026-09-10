@@ -35,6 +35,7 @@ pub(super) struct SystemBrowserLaunch {
     channel: &'static str,
     cdp_port: u16,
     background: bool,
+    headless: bool,
     width: u32,
     height: u32,
     display: Option<VirtualDisplay>,
@@ -46,14 +47,23 @@ pub(super) struct SystemBrowserLaunch {
 }
 
 impl SystemBrowserLaunch {
-    pub(super) async fn prepare(width: u32, height: u32, background: bool) -> Result<Self> {
+    pub(super) async fn prepare(
+        width: u32,
+        height: u32,
+        background: bool,
+        headless: bool,
+    ) -> Result<Self> {
         let (executable, channel) = find_system_browser().ok_or_else(|| {
             anyhow::anyhow!(
                 "Chrome, Microsoft Edge, or Chromium is required for projected browser authentication"
             )
         })?;
         let cdp_port = initial_cdp_port()?;
-        let display = VirtualDisplay::start(width, height).await?;
+        let display = if headless {
+            None
+        } else {
+            VirtualDisplay::start(width, height).await?
+        };
         #[cfg(target_os = "linux")]
         let (vnc, vnc_error) = match &display {
             Some(display) => ProjectedVncServer::start(display.name()).await,
@@ -66,6 +76,7 @@ impl SystemBrowserLaunch {
             channel,
             cdp_port,
             background,
+            headless,
             width,
             height,
             display,
@@ -88,7 +99,11 @@ impl SystemBrowserLaunch {
             .viewport(None)
             .arg(window_position(self.background))
             .arg("--force-device-scale-factor=1");
-        config = config.with_head();
+        config = if self.headless {
+            config.new_headless_mode()
+        } else {
+            config.with_head()
+        };
         if let Some(display) = &self.display {
             config = config
                 .env("DISPLAY", display.name())
@@ -164,7 +179,9 @@ impl SystemBrowserLaunch {
                 Ok(connected)
             }
             Err(error) => {
-                if let Err(cleanup_error) = terminate_browser_for_profile(profile).await {
+                if let Err(cleanup_error) =
+                    terminate_browser_for_profile(profile, Duration::ZERO).await
+                {
                     tracing::warn!(%cleanup_error, "failed to clean up background system browser launch");
                 }
                 Err(error)
@@ -209,6 +226,9 @@ impl SystemBrowserLaunch {
             window_position(self.background).to_owned(),
             "--force-device-scale-factor=1".to_owned(),
         ];
+        if self.headless {
+            args.push("--headless=new".to_owned());
+        }
         args.extend(extra_args);
         args
     }
@@ -225,7 +245,7 @@ impl SystemBrowserLaunch {
             "browser_binary":self.executable,
             "channel":self.channel,
             "profile_dir":profile,
-            "visibility":if self.background||self.display.is_some(){"background"}else{"visible"},
+            "visibility":if self.headless {"headless"}else if self.background||self.display.is_some(){"background"}else{"visible"},
             "display":self.display.as_ref().map_or("", VirtualDisplay::name),
             "display_owned":self.display.is_some(),
             "display_owner":self.display.as_ref().map_or("", |_| "cccc_xvfb")
@@ -264,7 +284,8 @@ impl SystemBrowserLaunch {
     pub(super) async fn stop(&mut self) {
         #[cfg(target_os = "macos")]
         if let Some(profile) = self.managed_profile.take()
-            && let Err(error) = terminate_browser_for_profile(&profile).await
+            && let Err(error) =
+                terminate_browser_for_profile(&profile, super::BROWSER_EXIT_TIMEOUT).await
         {
             tracing::warn!(%error, "failed to stop managed system browser process");
         }
@@ -911,6 +932,7 @@ mod tests {
             channel: "chrome",
             cdp_port: 9222,
             background: false,
+            headless: false,
             width: 1366,
             height: 900,
             display: None,
@@ -928,6 +950,28 @@ mod tests {
         assert_eq!(metadata["cdp_port"], 9222);
         assert_eq!(metadata["channel"], "chrome");
         assert_eq!(metadata["visibility"], "visible");
+        let mut headless = launch;
+        headless.headless = true;
+        assert_eq!(headless.metadata(42, profile)["visibility"], "headless");
+        #[cfg(target_os = "macos")]
+        {
+            let args = headless.browser_args(profile, Vec::new());
+            assert!(args.iter().any(|arg| arg == "--headless=new"));
+            assert!(
+                !args
+                    .iter()
+                    .any(|arg| arg.contains("mock-keychain") || arg.contains("password-store")),
+                "system profile must keep its normal credential storage"
+            );
+            headless.headless = false;
+            assert!(
+                !headless
+                    .browser_args(profile, Vec::new())
+                    .iter()
+                    .any(|arg| arg.starts_with("--headless"))
+            );
+        }
+
         assert_eq!(metadata["display_owned"], false);
         assert_eq!(metadata["profile_dir"], profile.to_string_lossy().as_ref());
     }
@@ -993,6 +1037,7 @@ mod tests {
             channel: "chrome",
             cdp_port: 9222,
             background: false,
+            headless: false,
             width: 1366,
             height: 900,
             display: None,
@@ -1010,5 +1055,93 @@ mod tests {
             macos_app_bundle(&launch.executable),
             Some(Path::new("/Applications/Google Chrome.app"))
         );
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod exit_lifecycle_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    async fn cleanup_case(stuck: bool) {
+        let temp = tempfile::tempdir().expect("isolated profile");
+        let profile = temp.path();
+        let script = r#"import os, pathlib, signal, sys, time
+p = pathlib.Path(sys.argv[1])
+signal.signal(signal.SIGTERM, lambda *_: os._exit(99))
+(p / 'ready').write_text('ready')
+while not (p / 'close-request').exists(): time.sleep(0.01)
+if sys.argv[2] == 'stuck': time.sleep(30)
+else:
+    time.sleep(0.8)
+    (p / 'cleanup-finished').write_text('finished')
+"#;
+        let mut child = tokio::process::Command::new("python3")
+            .args(["-c", script])
+            .arg(profile)
+            .arg(if stuck { "stuck" } else { "normal" })
+            .kill_on_drop(true)
+            .spawn()
+            .expect("owned fake browser");
+        let pid = child.id().expect("pid");
+        symlink(format!("localhost-{pid}"), profile.join("SingletonLock")).expect("profile owner");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !profile.join("ready").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fake browser ready");
+        let mut launch = SystemBrowserLaunch {
+            executable: PathBuf::from(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
+            channel: "chrome",
+            cdp_port: 0,
+            background: true,
+            headless: false,
+            width: 800,
+            height: 600,
+            display: None,
+            vnc_error: String::new(),
+            managed_profile: Some(profile.to_owned()),
+        };
+        std::fs::write(profile.join("close-request"), "close").expect("normal close requested");
+        let started = Instant::now();
+        tokio::time::timeout(Duration::from_secs(9), launch.stop())
+            .await
+            .expect("bounded stop");
+        let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .expect("child exited")
+            .expect("child status");
+        if stuck {
+            assert!(
+                started.elapsed() >= super::super::BROWSER_EXIT_TIMEOUT,
+                "fallback termination ran before the graceful-exit deadline"
+            );
+            assert_eq!(
+                status.code(),
+                Some(99),
+                "stuck process must still terminate"
+            );
+        } else {
+            assert!(status.success(), "normal cleanup was interrupted: {status}");
+            assert!(profile.join("cleanup-finished").exists());
+            assert!(
+                started.elapsed() < super::super::BROWSER_EXIT_TIMEOUT,
+                "completed exit unnecessarily waited out the full deadline"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn macos_stop_allows_the_browser_to_finish_normal_cleanup() {
+        cleanup_case(false).await;
+    }
+
+    #[tokio::test]
+    async fn macos_stop_terminates_a_stuck_browser_after_the_grace_period() {
+        cleanup_case(true).await;
     }
 }

@@ -68,8 +68,10 @@ fn browser_observations_do_not_overwrite_runtime_delivery_or_create_mail_state()
         json!({"group_id":group_id,"event_ids":[event_id]}),
     );
     assert_eq!(
+        // next_turn used the native MCP pull path, which already accepted
+        // this source. A later browser observation cannot undo that handoff.
         statuses.result["statuses"][&event_id]["obligation_status"]["web1"]["delivery_state"],
-        "failed"
+        "accepted"
     );
     assert!(
         statuses.result["statuses"][&event_id]
@@ -180,4 +182,136 @@ pub(crate) fn raw_call(home: &HomeLayout, op: &str, args: Map<String, Value>) ->
             args,
         },
     )
+}
+
+#[test]
+fn browser_pre_submit_failure_keeps_promoted_mail_retryable() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+    let created = call(&home, "group_create", json!({"title":"browser retry"}));
+    let gid = created.result["group"]["group_id"].as_str().expect("group");
+    call(
+        &home,
+        "actor_add",
+        json!({"group_id":gid,"actor_id":"web","runtime":"web_model","by":"user","env":{"CCCC_WEB_MODEL_DELIVERY_MODE":"browser"}}),
+    );
+    call(
+        &home,
+        "actor_start",
+        json!({"group_id":gid,"actor_id":"web","by":"user"}),
+    );
+    let source = call(
+        &home,
+        "send",
+        json!({"group_id":gid,"by":"user","to":["web"],"text":"retain this report","message_mode":"mail"}),
+    );
+    let source_id = source.result["event"]["id"].as_str().expect("source");
+    call(
+        &home,
+        "inbox_read",
+        json!({"group_id":gid,"actor_id":"web","by":"web"}),
+    );
+    call(
+        &home,
+        "message_deliver",
+        json!({"group_id":gid,"by":"user","source_event_id":source_id,"actor_ids":["web"]}),
+    );
+    let wait = json!({"group_id":gid,"actor_id":"web","by":"web","transport":"web_model_browser"});
+    let first = call(&home, "runtime_wait_next_turn", wait.clone()).result["turn"].clone();
+    assert_eq!(first["event_ids"], json!([source_id]));
+    let failure = json!({"group_id":gid,"actor_id":"web","by":"web","turn_id":first["turn_id"],"event_ids":[source_id],"delivery_id":"pre-submit-test","browser_delivery":{"state":"failed","detail":"not_sent_chat_busy","provider":"chatgpt"}});
+    call(&home, "web_model_browser_delivery_record", failure.clone());
+    let retry = call(&home, "runtime_wait_next_turn", wait.clone());
+    assert_eq!(
+        retry.result["status"], "work_available",
+        "failed browser handoff still owns the active turn: {:?}",
+        retry.result
+    );
+    assert_eq!(
+        retry.result["turn"]["event_ids"],
+        json!([source_id]),
+        "read Mail vanished from pending deliveries"
+    );
+    // Retry uses the same deterministic batch, but not a duplicate message.
+    assert_eq!(retry.result["turn"]["turn_id"], first["turn_id"]);
+    let mut submitted = failure.clone();
+    submitted["browser_delivery"]["state"] = json!("submitted");
+    call(&home, "web_model_browser_delivery_record", submitted);
+    call(
+        &home,
+        "runtime_complete_turn",
+        json!({"group_id":gid,"actor_id":"web","by":"web","turn_id":first["turn_id"],"event_ids":[source_id],"delivery_id":"pre-submit-test","status":"done"}),
+    );
+    assert_eq!(
+        call(&home, "runtime_wait_next_turn", wait.clone()).result["status"],
+        "idle"
+    );
+    let store = GroupStore::new(home.clone()).expect("store");
+    let events =
+        cccc_core::ledger::read_all(&store.ledger_path(gid).expect("ledger")).expect("events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == "chat.message")
+            .count(),
+        1
+    );
+    assert_eq!(
+        call(
+            &home,
+            "inbox_peek",
+            json!({"group_id":gid,"actor_id":"web","by":"web"})
+        )
+        .result["messages"],
+        json!([])
+    );
+}
+
+#[test]
+fn late_browser_failure_cannot_requeue_an_accepted_or_ambiguous_report() {
+    for (observed, expected) in [("submitted", "accepted"), ("ambiguous", "ambiguous")] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+        let group_id = setup(&home);
+        let wait = json!({"group_id":group_id,"actor_id":"web1","by":"web1","transport":"web_model_browser"});
+        let turn = call(&home, "runtime_wait_next_turn", wait.clone()).result["turn"].clone();
+        let event_id = turn["event_ids"][0].as_str().expect("source event");
+        let record = json!({"group_id":group_id,"actor_id":"web1","by":"web1",
+            "turn_id":turn["turn_id"],"event_ids":turn["event_ids"],"delivery_id":"late-observation",
+            "browser_delivery":{"state":observed,"detail":"current browser outcome","provider":"chatgpt"}});
+        call(&home, "web_model_browser_delivery_record", record.clone());
+        let mut late_failure = record;
+        late_failure["browser_delivery"] = json!({"state":"failed","detail":"late pre-submit error from an earlier attempt","provider":"chatgpt"});
+        call(
+            &home,
+            "web_model_browser_delivery_record",
+            late_failure.clone(),
+        );
+        let statuses = call(
+            &home,
+            "ledger_statuses",
+            json!({"group_id":group_id,"event_ids":[event_id]}),
+        );
+        assert_eq!(
+            statuses.result["statuses"][event_id]["obligation_status"]["web1"]["delivery_state"],
+            expected,
+            "a delayed failure downgraded {observed}, enabling a duplicate delivery"
+        );
+        assert_eq!(
+            call(&home, "runtime_wait_next_turn", wait.clone()).result["status"],
+            "turn_in_progress",
+            "a delayed failure released a batch that may already be delivered"
+        );
+        call(
+            &home,
+            "runtime_complete_turn",
+            completion_args(&group_id, &turn, "late-observation"),
+        );
+        call(&home, "web_model_browser_delivery_record", late_failure);
+        assert_eq!(
+            call(&home, "runtime_wait_next_turn", wait).result["status"],
+            "idle",
+            "a completed report was scheduled again by a late failure"
+        );
+    }
 }

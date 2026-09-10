@@ -40,6 +40,7 @@ async fn shared_runtime_is_sandboxed_and_persists_actor_store() {
         home: home.root().to_path_buf(),
         group_id: "g_test".into(),
         actor_id: "peer1".into(),
+        gateway_session: None,
     };
     let (first_id, first) = spawn_cell(
         temp.path(),
@@ -89,6 +90,7 @@ async fn shutdown_terminates_running_cells_for_the_home() {
         home: home.root().to_path_buf(),
         group_id: "g_shutdown".into(),
         actor_id: "peer1".into(),
+        gateway_session: None,
     };
     let (cell_id, cell) = spawn_cell(
         temp.path(),
@@ -126,6 +128,7 @@ async fn idle_cell_expires_without_another_start_request() {
         home: home.root().to_path_buf(),
         group_id: "g_expiry".into(),
         actor_id: "peer1".into(),
+        gateway_session: None,
     };
     let (cell_id, cell) = spawn_cell(
         temp.path(),

@@ -5,7 +5,7 @@ use cccc_core::{GroupDoc, HomeLayout};
 use serde_json::Map;
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use tracing::Instrument;
 
@@ -293,7 +293,34 @@ pub fn submit_batch(
         return false;
     };
     if item.has_terminal() {
-        return submit_with_startup_prompt(&item.startup_prompt, &delivery, |prepared| {
+        return submit_with_startup_prompt(&item.startup_prompt, &delivery, |prepared, initial| {
+            if cancelled.load(Ordering::Acquire) {
+                return false;
+            }
+            if initial {
+                // A TUI can enable bracketed paste before its conversation is mounted.
+                // Reuse the already-connected native protocol for the first admission;
+                // the same session remains visible in its TUI, with the configured model.
+                let delegation = format!(
+                    "actor-start:{}",
+                    source_events
+                        .iter()
+                        .map(|event| event.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(":")
+                );
+                return match super::block_on_managed(item.managed.start_turn(
+                    item.managed.generation(),
+                    &delegation,
+                    prepared,
+                )) {
+                    Ok(_) => true,
+                    Err(error) => {
+                        tracing::warn!(%error, group_id=%group.group_id, actor_id=%actor.id, "initial native member prompt was not confirmed");
+                        false
+                    }
+                };
+            }
             super::super::actor_delivery::submit_terminal_text(
                 &group.group_id,
                 actor,
@@ -308,7 +335,7 @@ pub fn submit_batch(
 fn submit_with_startup_prompt(
     startup_prompt: &Mutex<Option<String>>,
     delivery: &str,
-    submit: impl FnOnce(&str) -> bool,
+    submit: impl FnOnce(&str, bool) -> bool,
 ) -> bool {
     let Ok(mut startup_prompt) = startup_prompt.lock() else {
         return false;
@@ -317,7 +344,7 @@ fn submit_with_startup_prompt(
         || delivery.to_owned(),
         |prompt| format!("{prompt}\n\n{delivery}"),
     );
-    let accepted = submit(&prepared);
+    let accepted = submit(&prepared, startup_prompt.is_some());
     if accepted {
         *startup_prompt = None;
     }
@@ -402,11 +429,13 @@ mod tests {
     fn startup_prompt_is_sent_with_the_first_accepted_delivery_only() {
         let startup_prompt = Mutex::new(Some("startup context".to_owned()));
         let mut attempts = Vec::new();
+        let mut initial_routes = Vec::new();
 
         assert!(!submit_with_startup_prompt(
             &startup_prompt,
             "first delivery",
-            |prepared| {
+            |prepared, initial| {
+                initial_routes.push(initial);
                 attempts.push(prepared.to_owned());
                 false
             },
@@ -414,7 +443,8 @@ mod tests {
         assert!(submit_with_startup_prompt(
             &startup_prompt,
             "first delivery",
-            |prepared| {
+            |prepared, initial| {
+                initial_routes.push(initial);
                 attempts.push(prepared.to_owned());
                 true
             },
@@ -422,7 +452,8 @@ mod tests {
         assert!(submit_with_startup_prompt(
             &startup_prompt,
             "second delivery",
-            |prepared| {
+            |prepared, initial| {
+                initial_routes.push(initial);
                 attempts.push(prepared.to_owned());
                 true
             },
@@ -436,6 +467,7 @@ mod tests {
                 "second delivery",
             ]
         );
+        assert_eq!(initial_routes, [true, true, false]);
         assert_eq!(*startup_prompt.lock().expect("startup prompt"), None);
     }
 }

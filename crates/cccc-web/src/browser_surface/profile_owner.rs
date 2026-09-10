@@ -85,7 +85,10 @@ pub(super) fn browser_pid_from_singleton(profile: &Path) -> Result<u32> {
 }
 
 #[cfg(target_os = "macos")]
-pub(super) async fn terminate_browser_for_profile(profile: &Path) -> Result<bool> {
+pub(super) async fn terminate_browser_for_profile(
+    profile: &Path,
+    grace_period: std::time::Duration,
+) -> Result<bool> {
     let Ok(pid) = browser_pid_from_singleton(profile) else {
         return Ok(false);
     };
@@ -97,6 +100,15 @@ pub(super) async fn terminate_browser_for_profile(profile: &Path) -> Result<bool
         .contains(profile.to_string_lossy().as_ref())
     {
         bail!("refusing to terminate Chromium process {pid}: profile does not match");
+    }
+    // Browser::connect has no child handle to wait on. Let this exact process
+    // finish its normal shutdown before using the existing termination fallback.
+    let deadline = tokio::time::Instant::now() + grace_period;
+    while tokio::time::Instant::now() < deadline {
+        if !is_same_process(pid, &snapshot.start).await? {
+            return Ok(true);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     terminate_process(pid, &snapshot.start).await?;
     Ok(true)

@@ -9,12 +9,8 @@ use super::web_model_connector_activity::{self as activity, Activity};
 use super::web_model_connector_store;
 
 pub(super) fn target(state: &AppState, group_id: &str, actor_id: &str) -> Result<Value, ApiError> {
-    let store = GroupStore::new(state.home.clone()).map_err(io_error)?;
-    Ok(integration_state::group_get(&store, group_id, TARGETS_KEY)
-        .map_err(io_error)?
-        .get(actor_id)
-        .cloned()
-        .unwrap_or_else(|| json!({})))
+    cccc_core::web_model_connectors::browser_target(&state.home, group_id, actor_id)
+        .map_err(io_error)
 }
 
 pub(super) fn update_target(

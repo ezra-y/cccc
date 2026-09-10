@@ -1267,8 +1267,8 @@
         "accountTitle": "1. ChatGPT にサインイン",
         "accountReadyHint": "CCCC はこのブラウザ profile を ChatGPT 配信に使えます。",
         "accountOpenHint": "ここで ChatGPT を開き、一度サインインしてください。",
-        "mcpAppTitle": "2. CCCC MCP app を接続",
-        "deliveryTargetTitle": "3. 配信先を選択"
+        "mcpAppTitle": "3. CCCC MCP app を接続",
+        "deliveryTargetTitle": "4. 配信先を選択"
       },
       "next": {
         "prefix": "次: {{action}}",
@@ -1284,7 +1284,9 @@
         "bindTarget": "既存の ChatGPT 会話を保存するか、対象 URL を貼り付けるか、次回配信で新しい会話を選びます。",
         "ready": "ブラウザ配信の準備ができています。"
       },
-      "queue": { "queued": "{{count}} 件キュー済み" },
+      "queue": {
+        "queued": "{{count}} 件キュー済み"
+      },
       "warnings": {
         "rotateOldConnector": "この古い connector を一度ローテーションして、コピー可能な ChatGPT MCP URL を生成してください。",
         "localMcpUrl": "MCP URL はローカル専用です。Web ホスト型モデルには公開 HTTPS URL が必要です。",
@@ -1351,7 +1353,9 @@
         "seen": "確認済み",
         "seenAt": "{{time}} に確認"
       },
-      "copyLabels": { "mcpUrl": "MCP URL" },
+      "copyLabels": {
+        "mcpUrl": "MCP URL"
+      },
       "notices": {
         "connectorRotated": "Connector をローテーションしました。以前の connector は取り消されました。",
         "connectorCreated": "Connector を作成しました。",
@@ -1389,7 +1393,40 @@
         "inspect_error": "エラーを確認",
         "login_chatgpt": "ChatGPT にサインイン"
       },
-      "common": { "none": "なし", "notSet": "未設定" }
+      "common": {
+        "none": "なし",
+        "notSet": "未設定"
+      },
+      "t05": {
+        "selectGroup": "グループを選択",
+        "groupScope": "グループを選び、Web メンバーの会話と返信先を設定します。グループを切り替えてもアカウントは変わりません。",
+        "identity": "この Web メンバーの会話を接続",
+        "bound": "会話の識別情報を紐付け済み",
+        "unbound": "会話は未設定",
+        "disconnect": "会話の紐付けを解除",
+        "identityNote": "紐付けにはグループ内の実際の役割を使います。Web メンバーに Foreman の権限は付与されません。返信先は下で設定します。",
+        "original": "接続設定と権限の説明",
+        "sharedBrowser": "画面を隠しても報告を受信できます。このブラウザーの終了・再起動は全グループに影響します。",
+        "view": "画面を表示",
+        "hide": "画面を隠す",
+        "emptyGroup": "このグループには Web メンバーがいません。グループ名の横の「メンバー」から追加・変更してください。",
+        "sharedTitle": "ChatGPT にログイン",
+        "sharedLoginNote": "ログインは一度だけ。すべてのグループがこのアカウントを使用します。",
+        "sharedUnavailable": "ブラウザーの状態を取得できません",
+        "checkSharedLogin": "上の ChatGPT のログインとページを確認してください。",
+        "startMember": "グループのメンバー詳細からこの Web メンバーを開始してください。",
+        "currentMember": "現在の Web メンバー：{{member}} · {{role}}",
+        "roleForeman": "Foreman",
+        "rolePeer": "メンバー",
+        "confirmDisconnect": "「{{group}}」の「{{actor}}」の会話接続を解除しますか？\n\n以前の会話はこのメンバーとして CCCC を利用できなくなります。メンバーやログインは削除されず、他のグループにも影響しません。",
+        "confirmRotate": "「{{group}}」の「{{actor}}」の接続先を更新しますか？\n\n元の接続は失効し、新しい接続先または紐付け手順で再接続が必要です。",
+        "confirmTarget": "「{{group}}」の「{{actor}}」の返信先を変更しますか？\n\n変更前：{{previous}}\n変更後：{{next}}\n\n以後の報告は新しい返信先へ送られます。ログインと会話識別情報は変わりません。",
+        "confirmCloseBrowser": "ChatGPT ブラウザーを閉じますか？\n\n利用中のすべてのグループで Web 送信が一時停止します。ログイン情報は保持します。表示だけを閉じる場合は取り消して「画面を隠す」を選んでください。",
+        "confirmRestartBrowser": "ChatGPT ブラウザーを再起動しますか？\n\nすべてのグループが利用するページが中断され、未送信の下書きが失われる可能性があります。ログイン情報は保持します。",
+        "confirmDiscard": "返信先に未保存の変更があります。破棄してグループを切り替えますか？",
+        "groupStep": "2. グループを選択",
+        "webAccessScope": "この会話は接続済みです。接続先を再作成する必要はありません。"
+      }
     }
   },
   "webAccess": {

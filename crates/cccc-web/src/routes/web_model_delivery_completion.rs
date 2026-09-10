@@ -93,7 +93,7 @@ pub(super) async fn reconcile(
             "auto_bind_new_chat":pending_new_chat_bind
         }),
     )
-    .await;
+    .await?;
     match raw_call(state, "runtime_complete_turn", request).await {
         Ok(_) => {
             if pending_new_chat_bind && !submission_ambiguous {
@@ -112,7 +112,7 @@ pub(super) async fn reconcile(
                         "auto_bind_new_chat":true
                     }),
                 )
-                .await;
+                .await?;
             }
             let final_status = if submission_ambiguous {
                 "submission_ambiguous"
@@ -199,7 +199,7 @@ pub(super) async fn record_delivery(
     delivery_state: &str,
     detail: &str,
     metadata: Value,
-) {
+) -> Result<(), ApiError> {
     let mut browser_delivery = json!({
         "state":delivery_state,
         "detail":detail,
@@ -230,7 +230,8 @@ pub(super) async fn record_delivery(
     .as_object()
     .cloned()
     .expect("browser delivery request");
-    if let Err(error) = call(state, "web_model_browser_delivery_record", request).await {
+    let result = call(state, "web_model_browser_delivery_record", request).await;
+    if let Err(error) = &result {
         tracing::warn!(
             group_id,
             actor_id,
@@ -241,6 +242,7 @@ pub(super) async fn record_delivery(
             "Failed to record Web Model browser delivery status"
         );
     }
+    result.map(|_| ())
 }
 
 struct Evidence {

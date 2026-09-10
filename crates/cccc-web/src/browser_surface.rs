@@ -5,6 +5,7 @@ mod page_recovery;
 mod profile_owner;
 mod prompt_submission;
 mod proxy;
+mod relay_recovery;
 mod system_browser;
 
 pub use interaction::{serve_socket, serve_vnc_socket};
@@ -41,8 +42,13 @@ pub(crate) fn system_browser_path() -> Option<PathBuf> {
     system_browser::find_system_browser().map(|(path, _)| path)
 }
 
+pub(crate) const SHARED_WEB_MODEL_KEY: &str = "shared-chatgpt-web-model";
+
 #[derive(Default)]
 pub struct BrowserSurfaces {
+    // ponytail: one physical ChatGPT page; serialize whole navigations/submissions,
+    // not each low-level call. Per-page locks can replace this if tabs are introduced.
+    pub(crate) web_model_operation: Mutex<()>,
     pub(super) sessions: Mutex<HashMap<String, Session>>,
     key_operations: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     profile_operations: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
@@ -65,12 +71,14 @@ pub(super) struct Session {
     strategy: String,
     metadata: Value,
     recover_closed_page: bool,
+    relay_probe: Option<relay_recovery::RelayProbe>,
+    relay_probe_after: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Copy)]
 enum BrowserMode {
     Headless,
-    System { background: bool },
+    System { background: bool, headless: bool },
 }
 
 struct OpenRequest<'a> {
@@ -200,6 +208,7 @@ impl BrowserSurfaces {
         url: &str,
         width: u32,
         height: u32,
+        headless: bool,
     ) -> Result<Value> {
         self.open_with(OpenRequest {
             key,
@@ -209,7 +218,10 @@ impl BrowserSurfaces {
             height,
             storage_state: None,
             reuse_existing: true,
-            mode: BrowserMode::System { background: false },
+            mode: BrowserMode::System {
+                background: false,
+                headless,
+            },
         })
         .await
     }
@@ -254,7 +266,10 @@ impl BrowserSurfaces {
             height,
             storage_state,
             reuse_existing: false,
-            mode: BrowserMode::System { background: true },
+            mode: BrowserMode::System {
+                background: true,
+                headless: false,
+            },
         })
         .await
     }
@@ -330,9 +345,10 @@ impl BrowserSurfaces {
         let mut profile_lease = ProfileLease::acquire(profile).await?;
         let mut system_browser = match mode {
             BrowserMode::Headless => None,
-            BrowserMode::System { background } => {
-                Some(SystemBrowserLaunch::prepare(width, height, background).await?)
-            }
+            BrowserMode::System {
+                background,
+                headless,
+            } => Some(SystemBrowserLaunch::prepare(width, height, background, headless).await?),
         };
         let proxy_args = BrowserProxy::from_env()?
             .map(|proxy| proxy.chromium_args())
@@ -461,6 +477,8 @@ impl BrowserSurfaces {
             strategy,
             metadata,
             recover_closed_page: matches!(mode, BrowserMode::Headless),
+            relay_probe: None,
+            relay_probe_after: None,
         };
         let state = state(&session);
         self.sessions.lock().await.insert(key.into(), session);
@@ -714,17 +732,21 @@ async fn stop_browser(browser: &mut Browser, handler: &mut JoinHandle<()>) -> Re
             tracing::warn!("Chromium close command timed out; forcing process termination");
         }
     }
-    let exited = matches!(
-        tokio::time::timeout(BROWSER_EXIT_TIMEOUT, browser.wait()).await,
-        Ok(Ok(_))
-    );
-    if !exited {
-        match tokio::time::timeout(BROWSER_EXIT_TIMEOUT, browser.kill()).await {
-            Ok(Some(Ok(()))) | Ok(None) => {}
-            Ok(Some(Err(error))) => {
-                return Err(error).context("kill Chromium after close timeout");
+    // Connected system browsers have no child handle. Their actual process
+    // exit is awaited by SystemBrowserLaunch::stop, not Browser::wait().
+    if browser.get_mut_child().is_some() {
+        let exited = matches!(
+            tokio::time::timeout(BROWSER_EXIT_TIMEOUT, browser.wait()).await,
+            Ok(Ok(Some(_)))
+        );
+        if !exited {
+            match tokio::time::timeout(BROWSER_EXIT_TIMEOUT, browser.kill()).await {
+                Ok(Some(Ok(()))) | Ok(None) => {}
+                Ok(Some(Err(error))) => {
+                    return Err(error).context("kill Chromium after close timeout");
+                }
+                Err(_) => bail!("Chromium did not exit after forced termination"),
             }
-            Err(_) => bail!("Chromium did not exit after forced termination"),
         }
     }
     handler.abort();

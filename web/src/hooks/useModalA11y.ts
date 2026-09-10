@@ -120,7 +120,7 @@ export function useModalA11y(
 
   const handleEscape = useCallback(
     (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || e.defaultPrevented) return;
       if (!isTopModal(instanceId)) return;
       if (preserveTerminalKeys && e.target instanceof Element && e.target.closest(".xterm")) return;
       e.preventDefault();

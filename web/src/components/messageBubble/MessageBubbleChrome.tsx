@@ -351,7 +351,7 @@ export function MessageFooter({
               onClick={() => onRelay(event)}
               title={t("relayToGroup")}
             >
-              {t("relay")}
+              {t("relayToGroup")}
             </button>
           ) : null}
           {canReply ? (
