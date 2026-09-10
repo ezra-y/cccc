@@ -732,17 +732,21 @@ async fn stop_browser(browser: &mut Browser, handler: &mut JoinHandle<()>) -> Re
             tracing::warn!("Chromium close command timed out; forcing process termination");
         }
     }
-    let exited = matches!(
-        tokio::time::timeout(BROWSER_EXIT_TIMEOUT, browser.wait()).await,
-        Ok(Ok(_))
-    );
-    if !exited {
-        match tokio::time::timeout(BROWSER_EXIT_TIMEOUT, browser.kill()).await {
-            Ok(Some(Ok(()))) | Ok(None) => {}
-            Ok(Some(Err(error))) => {
-                return Err(error).context("kill Chromium after close timeout");
+    // Connected system browsers have no child handle. Their actual process
+    // exit is awaited by SystemBrowserLaunch::stop, not Browser::wait().
+    if browser.get_mut_child().is_some() {
+        let exited = matches!(
+            tokio::time::timeout(BROWSER_EXIT_TIMEOUT, browser.wait()).await,
+            Ok(Ok(Some(_)))
+        );
+        if !exited {
+            match tokio::time::timeout(BROWSER_EXIT_TIMEOUT, browser.kill()).await {
+                Ok(Some(Ok(()))) | Ok(None) => {}
+                Ok(Some(Err(error))) => {
+                    return Err(error).context("kill Chromium after close timeout");
+                }
+                Err(_) => bail!("Chromium did not exit after forced termination"),
             }
-            Err(_) => bail!("Chromium did not exit after forced termination"),
         }
     }
     handler.abort();

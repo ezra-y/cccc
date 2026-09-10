@@ -1194,3 +1194,92 @@ async fn redirect_before_send_never_dispatches_to_another_conversation() {
     manager.close("redirect").await.expect("close");
     server.abort();
 }
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn macos_system_browser_restarts_preserve_storage_and_submission() {
+    require_chrome!();
+    let (url, server) = local_page(
+        r#"<!doctype html><body>
+<textarea id="prompt-textarea"></textarea><button data-testid="send-button">Send</button>
+<script>document.querySelector('button').onclick=()=>{const i=document.querySelector('textarea');
+const m=document.createElement('div');m.dataset.messageAuthorRole='user';m.textContent=i.value;
+document.body.append(m);i.value=''}</script></body>"#,
+    )
+    .await;
+    let temp = tempfile::tempdir().expect("isolated profile");
+    let profile = temp.path().join("profile");
+    for cycle in 0..3 {
+        let manager = BrowserSurfaces::default();
+        let opened = manager
+            .open_seeded_system("exit-restart", &profile, &url, 800, 600, None)
+            .await
+            .expect("system Chrome opens");
+        let pid = opened["metadata"]["pid"]
+            .as_u64()
+            .expect("actual browser pid");
+        let page = manager
+            .sessions
+            .lock()
+            .await
+            .get("exit-restart")
+            .expect("session")
+            .page
+            .clone();
+        let work = async {
+            if cycle == 0 {
+                page.evaluate("document.cookie='cccc_exit_cookie=retained; path=/; max-age=600';localStorage.setItem('cccc-exit','retained')")
+                    .await.expect("save test storage");
+            } else {
+                let retained: bool = page.evaluate("document.cookie.includes('cccc_exit_cookie=retained') && localStorage.getItem('cccc-exit')==='retained'")
+                    .await.expect("read storage").into_value().expect("storage boolean");
+                assert!(retained, "restart lost persistent browser storage");
+            }
+            let prompt = format!("EXIT_RESTART_REPORT_{cycle}");
+            for _ in 0..2 {
+                assert!(matches!(
+                    manager
+                        .submit_prompt_with_attachment("exit-restart", &url, &prompt, None, &prompt)
+                        .await
+                        .expect("submit"),
+                    PromptSubmissionOutcome::Verified(_)
+                ));
+            }
+            let count: u64 = page
+                .evaluate("document.querySelectorAll('[data-message-author-role=user]').length")
+                .await
+                .expect("message count")
+                .into_value()
+                .expect("count");
+            assert_eq!(count, 1, "repeated submission duplicated the report");
+        };
+        let outcome =
+            futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(work)).await;
+        let started = std::time::Instant::now();
+        crate::shutdown::browser_surfaces(&manager).await;
+        let process = tokio::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "stat="])
+            .output()
+            .await
+            .expect("inspect actual pid");
+        let remaining = String::from_utf8_lossy(&process.stdout);
+        let exited = !process.status.success()
+            || remaining.trim().is_empty()
+            || remaining.trim().starts_with('Z');
+        if outcome.is_err() || !exited {
+            server.abort();
+        }
+        outcome.expect("storage and submission assertions");
+        assert!(exited, "system browser {pid} survived completed shutdown");
+        assert!(
+            !manager.info("exit-restart").await["active"]
+                .as_bool()
+                .unwrap_or(false)
+        );
+        eprintln!(
+            "MACOS_EXIT_CYCLE={cycle} pid={pid} shutdown_ms={} exited={exited} storage=retained report_count=1",
+            started.elapsed().as_millis()
+        );
+    }
+    server.abort();
+}
