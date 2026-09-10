@@ -1218,6 +1218,22 @@ document.body.append(m);i.value=''}</script></body>"#,
         let pid = opened["metadata"]["pid"]
             .as_u64()
             .expect("actual browser pid");
+        {
+            let mut sessions = manager.sessions.lock().await;
+            let session = sessions.get_mut("exit-restart").expect("connected session");
+            assert!(session.browser.get_mut_child().is_none());
+            assert!(
+                session
+                    .browser
+                    .wait()
+                    .await
+                    .expect("connected wait")
+                    .is_none()
+            );
+            eprintln!(
+                "CONNECTED_WAIT cycle={cycle} pid={pid} exit_status=None; live page verified next"
+            );
+        }
         let page = manager
             .sessions
             .lock()
@@ -1251,7 +1267,13 @@ document.body.append(m);i.value=''}</script></body>"#,
                 .expect("message count")
                 .into_value()
                 .expect("count");
-            assert_eq!(count, 1, "repeated submission duplicated the report");
+            let message_texts: Vec<String> = page.evaluate("Array.from(document.querySelectorAll('[data-message-author-role=user]'), e => e.textContent)")
+                .await.expect("message diagnostics").into_value().expect("message texts");
+            eprintln!("EXIT_RESTART_MESSAGES cycle={cycle} messages={message_texts:?}");
+            assert_eq!(
+                count, 1,
+                "repeated submission duplicated the report: {message_texts:?}"
+            );
         };
         let outcome =
             futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(work)).await;
