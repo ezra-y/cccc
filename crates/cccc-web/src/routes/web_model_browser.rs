@@ -712,6 +712,16 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
 
 fn deferred_action(evidence: &str) -> (&'static str, &'static str, &'static str) {
     match evidence {
+        "not_sent_conversation_archived" => (
+            "inspect_browser",
+            "Choose an available conversation",
+            "This conversation is archived. The report is retained; choose another target or restore this conversation yourself. Other groups can continue.",
+        ),
+        "not_sent_rate_limited" | "not_sent_access_denied" | "not_sent_verification_required" => (
+            "inspect_browser",
+            "Browser access needs attention",
+            "The browser showed an access or request restriction. Automatic page recovery is stopped and the original report is retained.",
+        ),
         "not_sent_composer_occupied" => (
             "resolve_draft",
             "Resolve the draft",

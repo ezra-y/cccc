@@ -40,12 +40,22 @@ impl BrowserSurfaces {
     pub(crate) async fn reconcile_relay_page(&self, key: &str, owner: &str) -> Result<()> {
         let original = self.page(key).await?;
         let observed = inspect_submission(&original, "", &[]).await?;
+        // Never refresh an explicit archive, login, verification or refusal page.
+        // Recovery uses observations, not retries against an account-level block.
+        if !observed.page_blocker.is_empty() || sign_in_required(&original).await? {
+            self.cancel_relay_probe(key, owner).await;
+            return Ok(());
+        }
         if observed.composer_chars > 0
             || (!(observed.running || observed.stop_visible) && composer_present(&original).await?)
         {
             self.cancel_relay_probe(key, owner).await;
             if let Some(s) = self.sessions.lock().await.get_mut(key) {
                 s.relay_probe_after = None;
+                s.relay_probe_retry_delay = RECHECK_INTERVAL;
+                if s.metadata["relay_recovery"]["state"] == "blocked" {
+                    s.metadata["relay_recovery"] = json!({"state":"ready"});
+                }
             }
             return Ok(());
         }
@@ -55,6 +65,13 @@ impl BrowserSurfaces {
             let session = sessions
                 .get_mut(key)
                 .context("browser surface is not active")?;
+            let last = &session.metadata["relay_recovery"];
+            if last["state"] == "blocked"
+                && last["url"] == observed.url
+                && last["source_turn"] == observed.latest_turn_id
+            {
+                return Ok(());
+            }
             if let Some(probe) = &session.relay_probe {
                 if probe.owner != owner {
                     return Ok(());
@@ -66,7 +83,9 @@ impl BrowserSurfaces {
                 }
                 // ponytail: one temporary tab in the existing browser/profile;
                 // no second browser, copied login, provider API, or polling service.
-                session.relay_probe_after = Some(now + RECHECK_INTERVAL);
+                session.relay_probe_after = Some(now + session.relay_probe_retry_delay);
+                session.relay_probe_retry_delay =
+                    (session.relay_probe_retry_delay * 2).min(Duration::from_secs(15 * 60));
                 let mut target = CreateTargetParams::new(&observed.url);
                 target.background = Some(true);
                 let page = session.browser.new_page(target).await?;
@@ -86,6 +105,22 @@ impl BrowserSurfaces {
             || probe.url != observed.url
             || probe.source_turn != observed.latest_turn_id
         {
+            self.cancel_relay_probe(key, owner).await;
+            return Ok(());
+        }
+        let fresh = inspect_submission(&probe.page, "", &[]).await?;
+        let blocker = if sign_in_required(&probe.page).await? {
+            "login_required"
+        } else {
+            fresh.page_blocker.as_str()
+        };
+        if !blocker.is_empty() {
+            if let Some(session) = self.sessions.lock().await.get_mut(key) {
+                session.metadata["relay_recovery"] = json!({
+                    "state":"blocked", "reason":blocker, "url":probe.url,
+                    "source_turn":probe.source_turn, "at":cccc_contracts::utc_now()
+                });
+            }
             self.cancel_relay_probe(key, owner).await;
             return Ok(());
         }
@@ -112,6 +147,7 @@ impl BrowserSurfaces {
             result?;
             if let Some(session) = self.sessions.lock().await.get_mut(key) {
                 session.relay_probe_after = None;
+                session.relay_probe_retry_delay = RECHECK_INTERVAL;
                 session.metadata["relay_recovery"] = json!({
                     "state":"refreshed", "reason":"fresh_completed_turn", "url":probe.url,
                     "completed_turn":completed.ok().flatten(), "at":cccc_contracts::utc_now()
@@ -141,6 +177,7 @@ pub(super) async fn completed_turn(page: &Page, expected_url: &str) -> Result<Op
     if snapshot.url != expected_url
         || snapshot.running
         || snapshot.stop_visible
+        || !snapshot.page_blocker.is_empty()
         || snapshot.composer_chars > 0
         || sign_in_required(page).await?
     {

@@ -73,6 +73,19 @@ pub(super) fn retryable_pre_send_deferral(evidence: &Value) -> bool {
     )
 }
 
+fn requires_browser_action(evidence: &Value) -> bool {
+    matches!(
+        evidence["submission_evidence"].as_str(),
+        Some(
+            "not_sent_conversation_archived"
+                | "not_sent_rate_limited"
+                | "not_sent_access_denied"
+                | "not_sent_verification_required"
+                | "not_sent_login_required"
+        )
+    )
+}
+
 fn spawn_worker(state: AppState, group_id: String, actor_id: String) {
     let session_key = key(&group_id, &actor_id);
     let Some(worker) = SessionGuard::acquire(&WORKERS, session_key.clone()) else {
@@ -331,16 +344,8 @@ async fn deliver_once(
             .await;
     }
     let mut retained_busy_deferral = target["last_delivery_status"] == "deferred"
-        && matches!(
-            target
-                .pointer("/last_submission_evidence/submission_evidence")
-                .and_then(Value::as_str),
-            Some(
-                "not_sent_chat_busy"
-                    | "not_sent_composer_occupied"
-                    | "not_sent_composer_unavailable"
-            )
-        );
+        && (retryable_pre_send_deferral(&target["last_submission_evidence"])
+            || requires_browser_action(&target["last_submission_evidence"]));
     if retained_busy_deferral {
         let statuses = daemon_call(
             state,
@@ -390,32 +395,57 @@ async fn deliver_once(
         }
     }
     if retained_busy_deferral {
+        // A previously archived target needs explicit restoration/replacement.
+        // Do not keep navigating back from another group's working conversation.
+        if target["last_submission_evidence"]["submission_evidence"]
+            == "not_sent_conversation_archived"
+            && surface["url"] != target["url"]
+        {
+            return Ok(DeliveryOutcome::Stopped);
+        }
+        let mut blocked = state
+            .browser_surfaces
+            .relay_target_deferral(session_key, target_url)
+            .await
+            .map_err(|e| ApiError::unavailable("web_model_browser_probe_failed", e.to_string()))?;
+        if blocked.as_ref().is_some_and(retryable_pre_send_deferral) {
+            state
+                .browser_surfaces
+                .reconcile_relay_page(session_key, &key(group_id, actor_id))
+                .await
+                .map_err(|e| {
+                    ApiError::unavailable("web_model_page_recheck_failed", e.to_string())
+                })?;
+            blocked = state
+                .browser_surfaces
+                .relay_target_deferral(session_key, target_url)
+                .await
+                .map_err(|e| {
+                    ApiError::unavailable("web_model_browser_probe_failed", e.to_string())
+                })?;
+        }
+        if let Some(browser) = blocked {
+            let needs_action = requires_browser_action(&browser);
+            if browser["submission_evidence"]
+                != target["last_submission_evidence"]["submission_evidence"]
+            {
+                update_target(
+                    state,
+                    group_id,
+                    actor_id,
+                    json!({"last_submission_evidence":browser}),
+                )?;
+            }
+            return Ok(if needs_action {
+                DeliveryOutcome::Stopped
+            } else {
+                DeliveryOutcome::Idle
+            });
+        }
         state
             .browser_surfaces
-            .reconcile_relay_page(surface_key(), &key(group_id, actor_id))
-            .await
-            .map_err(|e| ApiError::unavailable("web_model_page_recheck_failed", e.to_string()))?;
-    }
-    if retained_busy_deferral
-        && let Some(browser) = state
-            .browser_surfaces
-            .relay_surface_deferral(surface_key())
-            .await
-            .map_err(|error| {
-                ApiError::unavailable("web_model_browser_probe_failed", error.to_string())
-            })?
-    {
-        if browser["submission_evidence"]
-            != target["last_submission_evidence"]["submission_evidence"]
-        {
-            update_target(
-                state,
-                group_id,
-                actor_id,
-                json!({"last_submission_evidence":browser}),
-            )?;
-        }
-        return Ok(DeliveryOutcome::Idle);
+            .cancel_relay_probe(session_key, &key(group_id, actor_id))
+            .await;
     }
     if target["last_delivery_status"] == "submitting" {
         let message = "browser delivery was interrupted after its at-most-once dispatch fence; the message will not be redelivered automatically";
@@ -629,6 +659,7 @@ async fn deliver_once(
     let browser = match submitted {
         Ok(PromptSubmissionOutcome::Verified(browser)) => browser,
         Ok(PromptSubmissionOutcome::Deferred(browser)) => {
+            let needs_action = requires_browser_action(&browser);
             let busy = retryable_pre_send_deferral(&browser);
             let message = "browser model is not ready for a safe prompt submission";
             update_target(
@@ -652,7 +683,9 @@ async fn deliver_once(
             record_connector(state, group_id, actor_id, "deferred", turn_id, message)?;
             // A running Chat or an unsent human draft is not a failed connection.
             // Reuse the existing idle cadence rather than exhausting technical retries.
-            return Ok(if busy {
+            return Ok(if needs_action {
+                DeliveryOutcome::Stopped
+            } else if busy {
                 DeliveryOutcome::Idle
             } else {
                 DeliveryOutcome::Deferred(turn_id.to_owned())
@@ -1524,6 +1557,33 @@ mod retry_integration_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::time::{Duration, timeout};
 
+    async fn wait_for_original_receipt(state: &AppState, gid: &str, id: &str) {
+        let store = GroupStore::new(state.home.clone()).expect("store");
+        timeout(Duration::from_secs(12), async {
+            loop {
+                let operation = state.browser_surfaces.web_model_operation.lock().await;
+                let events =
+                    ledger::read_all(&store.ledger_path(gid).expect("ledger")).expect("events");
+                let accepted = events
+                    .iter()
+                    .filter(|event| {
+                        event.kind == "runtime.delivery"
+                            && event.data["source_event_id"] == id
+                            && event.data["state"] == "accepted"
+                    })
+                    .count();
+                assert!(accepted <= 1, "duplicate receipt for {id}");
+                if accepted == 1 {
+                    break;
+                }
+                drop(operation);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("original report has one durable receipt");
+    }
+
     #[test]
     fn rejected_session_guard_cannot_release_the_current_owner() {
         for registry in [&WORKERS, &IN_FLIGHT] {
@@ -1749,6 +1809,7 @@ mod retry_integration_tests {
                     browser.info(surface_key()).await
                 );
             }
+            wait_for_original_receipt(&state, gid, source_id).await;
             assert!(matches!(
                 deliver_pending(&state, gid, "web")
                     .await
@@ -1800,12 +1861,16 @@ mod retry_integration_tests {
                 )
                 .await
                 .expect("next report promotion");
+                let attempt = deliver_pending(&state, gid, "web")
+                    .await
+                    .expect("next handoff");
+                // The periodic worker remains alive. Either contender may send;
+                // assert the original's durable receipt, never who won admission.
                 assert!(matches!(
-                    deliver_pending(&state, gid, "web")
-                        .await
-                        .expect("next handoff"),
-                    DeliveryOutcome::Submitted
+                    attempt,
+                    DeliveryOutcome::Submitted | DeliveryOutcome::Idle
                 ));
+                wait_for_original_receipt(&state, gid, event_id).await;
                 assert!(matches!(
                     deliver_pending(&state, gid, "web")
                         .await
@@ -2555,8 +2620,69 @@ mod retry_integration_tests {
                 browser.info(surface_key()).await["started_at"],
                 initial_browser["started_at"]
             );
+            // A report deferred on an unrelated busy page must still reach its
+            // own target after that page becomes archived. No new message wakes it.
+            let (_, gid) = &groups[1];
+            let page = browser
+                .sessions
+                .lock()
+                .await
+                .get(surface_key())
+                .expect("session")
+                .page
+                .clone();
+            page.evaluate("document.body.insertAdjacentHTML('beforeend','<button id=busy aria-label=\"Stop streaming\">Stop</button>')").await.expect("busy page");
+            let source = call("send", json!({"group_id":gid,"by":"user","to":["web"],"text":"AFTER_FOREIGN_ARCHIVE","message_mode":"mail"})).await.expect("new retained report");
+            let id = source["event"]["id"].as_str().expect("id");
+            call(
+                "message_deliver",
+                json!({"group_id":gid,"by":"user","source_event_id":id,"actor_ids":["web"]}),
+            )
+            .await
+            .expect("promote original");
+            ensure_worker(state.clone(), gid.clone(), "web".into()).await;
+            timeout(Duration::from_secs(8), async {
+                loop {
+                    let target = load_target(&state, gid, "web").expect("target");
+                    if target["last_delivery_status"] == "deferred"
+                        && target["last_delivery_event_ids"]
+                            .as_array()
+                            .is_some_and(|ids| ids.iter().any(|v| v == id))
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await
+            .expect("original report deferred");
+            page.evaluate("history.replaceState({},'', '/archived');document.body.innerHTML='<main><p>This conversation is archived</p><button>Unarchive</button></main>'").await.expect("foreign page archived");
+            timeout(Duration::from_secs(12), async {
+                loop {
+                    let events =
+                        ledger::read_all(&store.ledger_path(gid).expect("ledger")).expect("events");
+                    if events.iter().any(|e| {
+                        e.kind == "runtime.delivery"
+                            && e.data["source_event_id"] == id
+                            && e.data["state"] == "accepted"
+                    }) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await
+            .expect("retained report resumes without a new event");
+            let received = records.lock().expect("records").clone();
+            assert_eq!(
+                received.len(),
+                3,
+                "original batches or recovered report were duplicated"
+            );
+            assert_eq!(received[2]["path"], "/b");
+            assert!(received[2]["prompt"].as_str().expect("prompt").contains(id));
             eprintln!(
-                "TWO_GROUP_REAL_CHROME: ten original reports; same-named actors isolated; A draft preserved; one polling owner each; two batches resumed; ten accepted once; Mail unread"
+                "TWO_GROUP_REAL_CHROME: ten isolated reports plus foreign-archive recovery; every original accepted once; no new wake event"
             );
         };
         let result = tokio::spawn(timeout(Duration::from_secs(35), operation)).await;
