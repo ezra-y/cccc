@@ -291,49 +291,60 @@ pub fn submit_batch(
         return false;
     };
     if item.has_terminal() {
-        return submit_with_startup_prompt(&item.startup_prompt, &delivery, |prepared, initial| {
-            if cancelled.load(Ordering::Acquire) {
-                return false;
-            }
-            if initial {
-                // A TUI can enable bracketed paste before its conversation is mounted.
-                // Reuse the already-connected native protocol for the first admission;
-                // the same session remains visible in its TUI, with the configured model.
-                let delegation = format!(
-                    "actor-start:{}",
-                    source_events
-                        .iter()
-                        .map(|event| event.id.as_str())
-                        .collect::<Vec<_>>()
-                        .join(":")
-                );
-                return match super::block_on_managed(item.managed.start_turn(
-                    item.managed.generation(),
-                    &delegation,
-                    prepared,
-                )) {
-                    Ok(_) => true,
-                    Err(error) => {
-                        tracing::warn!(%error, group_id=%group.group_id, actor_id=%actor.id, "initial native member prompt was not confirmed");
-                        false
-                    }
-                };
-            }
-            super::super::actor_delivery::submit_terminal_text(
-                &group.group_id,
-                actor,
-                prepared,
-                cancelled,
-            )
-        });
+        return submit_managed_prompt(
+            &item.managed,
+            &item.startup_prompt,
+            source_events,
+            &delivery,
+            cancelled,
+            &group.group_id,
+            &actor.id,
+        );
     }
     false
+}
+
+pub(crate) fn submit_managed_prompt(
+    managed: &super::super::codex_voice_analyst::AnalystSession,
+    startup_prompt: &Mutex<Option<String>>,
+    source_events: &[Event],
+    delivery: &str,
+    cancelled: &AtomicBool,
+    group_id: &str,
+    actor_id: &str,
+) -> bool {
+    // Keep the historical prefix so a retry after upgrading reuses the
+    // delegation already persisted for an earlier first delivery.
+    let delegation = format!(
+        "actor-start:{}",
+        source_events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>()
+            .join(":")
+    );
+    submit_with_startup_prompt(startup_prompt, delivery, |prepared| {
+        if cancelled.load(Ordering::Acquire) {
+            return false;
+        }
+        match super::block_on_managed(managed.start_turn(
+            managed.generation(),
+            &delegation,
+            prepared,
+        )) {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(%error, %group_id, %actor_id, "managed member prompt was not confirmed");
+                false
+            }
+        }
+    })
 }
 
 fn submit_with_startup_prompt(
     startup_prompt: &Mutex<Option<String>>,
     delivery: &str,
-    submit: impl FnOnce(&str, bool) -> bool,
+    submit: impl FnOnce(&str) -> bool,
 ) -> bool {
     let Ok(mut startup_prompt) = startup_prompt.lock() else {
         return false;
@@ -342,7 +353,7 @@ fn submit_with_startup_prompt(
         || delivery.to_owned(),
         |prompt| format!("{prompt}\n\n{delivery}"),
     );
-    let accepted = submit(&prepared, startup_prompt.is_some());
+    let accepted = submit(&prepared);
     if accepted {
         *startup_prompt = None;
     }
@@ -427,13 +438,10 @@ mod tests {
     fn startup_prompt_is_sent_with_the_first_accepted_delivery_only() {
         let startup_prompt = Mutex::new(Some("startup context".to_owned()));
         let mut attempts = Vec::new();
-        let mut initial_routes = Vec::new();
-
         assert!(!submit_with_startup_prompt(
             &startup_prompt,
             "first delivery",
-            |prepared, initial| {
-                initial_routes.push(initial);
+            |prepared| {
                 attempts.push(prepared.to_owned());
                 false
             },
@@ -441,8 +449,7 @@ mod tests {
         assert!(submit_with_startup_prompt(
             &startup_prompt,
             "first delivery",
-            |prepared, initial| {
-                initial_routes.push(initial);
+            |prepared| {
                 attempts.push(prepared.to_owned());
                 true
             },
@@ -450,8 +457,7 @@ mod tests {
         assert!(submit_with_startup_prompt(
             &startup_prompt,
             "second delivery",
-            |prepared, initial| {
-                initial_routes.push(initial);
+            |prepared| {
                 attempts.push(prepared.to_owned());
                 true
             },
@@ -465,7 +471,6 @@ mod tests {
                 "second delivery",
             ]
         );
-        assert_eq!(initial_routes, [true, true, false]);
         assert_eq!(*startup_prompt.lock().expect("startup prompt"), None);
     }
 }
