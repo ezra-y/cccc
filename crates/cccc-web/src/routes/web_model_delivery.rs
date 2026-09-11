@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use base64::Engine;
+use cccc_core::web_model_connectors::BrowserTargetOwner;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -17,7 +18,7 @@ use super::web_model_browser::{key, surface_key};
 use super::web_model_delivery_completion::{
     args, call as daemon_call, complete_args, reconcile, record_delivery,
 };
-use super::web_model_delivery_state::{record_connector, target as load_target, update_target};
+use super::web_model_delivery_state::{record_connector, snapshot, update_target};
 
 static IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static WORKERS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -49,6 +50,7 @@ struct BootstrapSeed {
 }
 
 struct DeliveryAttempt<'a> {
+    owner: &'a BrowserTargetOwner,
     turn_id: &'a str,
     event_ids: Value,
     delivery_id: &'a str,
@@ -57,7 +59,7 @@ struct DeliveryAttempt<'a> {
 pub(super) enum DeliveryOutcome {
     Submitted,
     Idle,
-    Deferred(String),
+    Deferred(String, Box<BrowserTargetOwner>),
     Ambiguous,
     Stopped,
 }
@@ -72,14 +74,12 @@ fn spawn_worker(state: AppState, group_id: String, actor_id: String) {
         return;
     };
     tokio::spawn(async move {
-        // Keep the worker guard in this scope so it is always released before the fresh-turn
-        // check below. An event arriving during the final deferred attempt cannot acquire the
-        // guard, so that check is responsible for recovering its wake-up.
+        // Retain the worker through final failure accounting, then release it
+        // before scheduling work for a replacement target or a fresh turn.
         let exhausted_turn_id = {
-            let _worker = worker;
             let mut exhausted_turn_id = None;
             let mut retry_seconds = 1_u64;
-            let mut deferred_turn_id = String::new();
+            let mut deferred_owner = None;
             let mut deferred_retries = 0_u32;
             let mut shutdown = state.shutdown.subscribe();
             loop {
@@ -90,24 +90,24 @@ fn spawn_worker(state: AppState, group_id: String, actor_id: String) {
                 let delay = match deliver_pending(&state, &group_id, &actor_id).await {
                     Ok(DeliveryOutcome::Submitted) => {
                         retry_seconds = 1;
-                        deferred_turn_id.clear();
+                        deferred_owner = None;
                         deferred_retries = 0;
                         std::time::Duration::from_millis(10)
                     }
-                    Ok(DeliveryOutcome::Deferred(turn_id)) => {
+                    Ok(DeliveryOutcome::Deferred(turn_id, owner)) => {
                         retry_seconds = 1;
-                        if deferred_turn_id != turn_id {
-                            deferred_turn_id = turn_id;
+                        if deferred_owner.as_ref() != Some(&owner) {
+                            deferred_owner = Some(owner.clone());
                             deferred_retries = 0;
                         }
                         let Some(delay) = deferred_retry_delay(deferred_retries) else {
                             tracing::info!(
                                 group_id,
                                 actor_id,
-                                turn_id = deferred_turn_id,
+                                turn_id,
                                 "Web-model browser deferred retry budget exhausted"
                             );
-                            exhausted_turn_id = Some(deferred_turn_id.clone());
+                            exhausted_turn_id = Some((turn_id, owner));
                             break;
                         };
                         deferred_retries += 1;
@@ -115,7 +115,7 @@ fn spawn_worker(state: AppState, group_id: String, actor_id: String) {
                     }
                     Ok(DeliveryOutcome::Idle | DeliveryOutcome::Ambiguous) => {
                         retry_seconds = 1;
-                        deferred_turn_id.clear();
+                        deferred_owner = None;
                         deferred_retries = 0;
                         IDLE_POLL_INTERVAL
                     }
@@ -139,16 +139,23 @@ fn spawn_worker(state: AppState, group_id: String, actor_id: String) {
             exhausted_turn_id
         };
 
-        let Some(exhausted_turn_id) = exhausted_turn_id else {
+        let Some((exhausted_turn_id, exhausted_owner)) = exhausted_turn_id else {
             return;
         };
-        if let Ok(target) = load_target(&state, &group_id, &actor_id) {
+        if let Ok((target, current_owner)) = snapshot(&state, &group_id, &actor_id) {
+            if current_owner != *exhausted_owner {
+                drop(worker);
+                spawn_worker(state, group_id, actor_id);
+                return;
+            }
+            let owner = &exhausted_owner;
             let message =
                 "browser model remained unavailable after the bounded automatic retry budget";
             let _ = update_target(
                 &state,
                 &group_id,
                 &actor_id,
+                owner,
                 json!({"last_delivery_status":"failed","last_error":message}),
             );
             if let (Some(delivery_id), Some(event_ids)) = (
@@ -169,6 +176,7 @@ fn spawn_worker(state: AppState, group_id: String, actor_id: String) {
                 .await;
             }
         }
+        drop(worker);
         match fresh_turn_after_exhaustion(&state, &group_id, &actor_id, &exhausted_turn_id).await {
             Ok(Some(fresh_turn_id)) => {
                 tracing::debug!(
@@ -301,7 +309,8 @@ async fn deliver_once(
     if !surface["active"].as_bool().unwrap_or(false) {
         return Ok(DeliveryOutcome::Idle);
     }
-    let target = load_target(state, group_id, actor_id)?;
+    let (target, target_owner) = snapshot(state, group_id, actor_id)?;
+    let owner = &target_owner;
     let target_url = target["url"].as_str().unwrap_or("");
     if target["last_delivery_status"] == "preparing" {
         return retry_unsubmitted_turn(
@@ -309,6 +318,7 @@ async fn deliver_once(
             group_id,
             actor_id,
             DeliveryAttempt {
+                owner,
                 turn_id: required(&target, "last_delivery_turn_id")?,
                 event_ids: target["last_delivery_event_ids"].clone(),
                 delivery_id: required(&target, "last_delivery_id")?,
@@ -374,6 +384,7 @@ async fn deliver_once(
                 state,
                 group_id,
                 actor_id,
+                owner,
                 json!({
                     "last_delivery_status":if unverified {"submission_ambiguous"} else {"handled"},
                     "last_error":if unverified {"The earlier delivery remains unverified; it will not be automatically resubmitted."} else {""}
@@ -405,6 +416,7 @@ async fn deliver_once(
                 state,
                 group_id,
                 actor_id,
+                owner,
                 json!({"last_submission_evidence":browser}),
             )?;
         }
@@ -422,6 +434,7 @@ async fn deliver_once(
             group_id,
             actor_id,
             DeliveryAttempt {
+                owner,
                 turn_id: required(&target, "last_delivery_turn_id")?,
                 event_ids: target["last_delivery_event_ids"].clone(),
                 delivery_id: required(&target, "last_delivery_id")?,
@@ -437,6 +450,7 @@ async fn deliver_once(
             state,
             group_id,
             actor_id,
+            owner,
             json!({
                 "last_delivery_status":"submission_ambiguous",
                 "last_delivery_at":cccc_contracts::utc_now(),
@@ -452,6 +466,7 @@ async fn deliver_once(
             state,
             group_id,
             actor_id,
+            owner,
             "ambiguous",
             target["last_delivery_turn_id"].as_str().unwrap_or(""),
             message,
@@ -461,8 +476,9 @@ async fn deliver_once(
                 state,
                 group_id,
                 actor_id,
+                owner,
                 session_key,
-                &load_target(state, group_id, actor_id)?,
+                &target,
             )
             .await;
         }
@@ -472,14 +488,22 @@ async fn deliver_once(
         return Ok(DeliveryOutcome::Idle);
     }
     if target["last_delivery_status"] == "submission_ambiguous" {
-        if recover_verified_ambiguous_submission(state, group_id, actor_id, &target).await? {
+        if recover_verified_ambiguous_submission(state, group_id, actor_id, owner, &target).await? {
             return Ok(DeliveryOutcome::Submitted);
         }
         // The attempted turn was already committed to preserve at-most-once delivery. A known
         // conversation target can therefore continue with later turns without retrying it. A new
         // chat must remain fenced until its conversation URL can be recovered.
         if target["kind"] == "new_chat" {
-            return resolve_pending_new_chat(state, group_id, actor_id, session_key, &target).await;
+            return resolve_pending_new_chat(
+                state,
+                group_id,
+                actor_id,
+                owner,
+                session_key,
+                &target,
+            )
+            .await;
         }
     }
     if is_legacy_pending_delivery(&target) {
@@ -492,10 +516,25 @@ async fn deliver_once(
             })?
             .is_some()
         {
-            return resolve_pending_new_chat(state, group_id, actor_id, session_key, &target).await;
-        }
-        return recover_legacy_pending_delivery(state, group_id, actor_id, session_key, &target)
+            return resolve_pending_new_chat(
+                state,
+                group_id,
+                actor_id,
+                owner,
+                session_key,
+                &target,
+            )
             .await;
+        }
+        return recover_legacy_pending_delivery(
+            state,
+            group_id,
+            actor_id,
+            owner,
+            session_key,
+            &target,
+        )
+        .await;
     }
     if matches!(
         target["last_delivery_status"].as_str(),
@@ -506,16 +545,20 @@ async fn deliver_once(
                 | "completion_conflict"
         )
     ) {
-        if !reconcile(state, group_id, actor_id, &target).await? {
+        if !reconcile(state, group_id, actor_id, owner, &target).await? {
             return Ok(DeliveryOutcome::Ambiguous);
         }
-        let reconciled = load_target(state, group_id, actor_id)?;
+        let (reconciled, reconciled_owner) = snapshot(state, group_id, actor_id)?;
+        if &reconciled_owner != owner {
+            return Ok(DeliveryOutcome::Idle);
+        }
         if reconciled["last_delivery_status"] == "submission_ambiguous" {
             if reconciled["kind"] == "new_chat" {
                 return resolve_pending_new_chat(
                     state,
                     group_id,
                     actor_id,
+                    owner,
                     session_key,
                     &reconciled,
                 )
@@ -527,6 +570,7 @@ async fn deliver_once(
                     state,
                     group_id,
                     actor_id,
+                    owner,
                     session_key,
                     &reconciled,
                 )
@@ -541,7 +585,8 @@ async fn deliver_once(
             Some("submitted" | "pending_new_chat_bind")
         )
     {
-        return resolve_pending_new_chat(state, group_id, actor_id, session_key, &target).await;
+        return resolve_pending_new_chat(state, group_id, actor_id, owner, session_key, &target)
+            .await;
     }
     let wait = daemon_call(
         state,
@@ -555,17 +600,34 @@ async fn deliver_once(
     let turn = &wait["turn"];
     let turn_id = required(turn, "turn_id")?;
     let delivery_id = browser_delivery_id(actor_id, turn_id);
-    update_target(
+    if !update_target(
         state,
         group_id,
         actor_id,
+        owner,
         json!({
             "last_delivery_id":delivery_id, "last_delivery_turn_id":turn_id,
             "last_delivery_event_ids":turn["event_ids"], "last_delivery_status":"preparing",
             "last_delivery_started_at":cccc_contracts::utc_now(),
             "last_submission_evidence":null, "last_error":""
         }),
-    )?;
+    )? {
+        return retry_unsubmitted_turn(
+            state,
+            group_id,
+            actor_id,
+            DeliveryAttempt {
+                owner,
+                turn_id,
+                event_ids: turn["event_ids"].clone(),
+                delivery_id: &delivery_id,
+            },
+            "browser binding or target changed before preparation",
+        )
+        .await;
+    }
+    let target_owner = owner.for_delivery(&delivery_id);
+    let owner = &target_owner;
     let event_label = turn["event_ids"]
         .as_array()
         .into_iter()
@@ -594,14 +656,6 @@ async fn deliver_once(
                 if !super::web_model_supervisor::actor_delivery_enabled(state, group_id, actor_id) {
                     return Err(anyhow::anyhow!("actor stopped during browser preparation"));
                 }
-                // The durable fence belongs immediately before Send/Enter, not navigation.
-                update_target(
-                    state,
-                    group_id,
-                    actor_id,
-                    json!({"last_delivery_status":"submitting"}),
-                )
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
                 record_delivery(
                     state,
                     group_id,
@@ -615,10 +669,24 @@ async fn deliver_once(
                     "auto_bind_new_chat":target["kind"] == "new_chat"}),
                 )
                 .await
-                .map_err(|e| anyhow::anyhow!(e.to_string()))
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                acquire_dispatch_permit(state, group_id, actor_id, owner, "submitting").await
             },
         )
         .await;
+    let submitted = if matches!(
+        &submitted,
+        Err(_) | Ok(PromptSubmissionOutcome::Deferred(_))
+    ) && snapshot(state, group_id, actor_id)?.1 != *owner
+    {
+        state
+            .browser_surfaces
+            .clear_staged_prompt(session_key, &browser_prompt, &delivery_id)
+            .await
+            .and(submitted)
+    } else {
+        submitted
+    };
     let browser = match submitted {
         Ok(PromptSubmissionOutcome::Verified(browser)) => browser,
         Ok(PromptSubmissionOutcome::Deferred(browser)) => {
@@ -635,6 +703,7 @@ async fn deliver_once(
                 state,
                 group_id,
                 actor_id,
+                owner,
                 json!({"last_delivery_status":"deferred","last_submission_evidence":browser,"last_error":message}),
             )?;
             record_delivery(
@@ -649,13 +718,15 @@ async fn deliver_once(
                 json!({"target_url":target_url}),
             )
             .await?;
-            record_connector(state, group_id, actor_id, "deferred", turn_id, message)?;
+            record_connector(
+                state, group_id, actor_id, owner, "deferred", turn_id, message,
+            )?;
             // A running Chat or an unsent human draft is not a failed connection.
             // Reuse the existing idle cadence rather than exhausting technical retries.
             return Ok(if busy {
                 DeliveryOutcome::Idle
             } else {
-                DeliveryOutcome::Deferred(turn_id.to_owned())
+                DeliveryOutcome::Deferred(turn_id.to_owned(), Box::new(owner.clone()))
             });
         }
         Ok(PromptSubmissionOutcome::Ambiguous(browser)) => {
@@ -665,6 +736,7 @@ async fn deliver_once(
                 group_id,
                 actor_id,
                 DeliveryAttempt {
+                    owner,
                     turn_id,
                     event_ids: turn["event_ids"].clone(),
                     delivery_id: &delivery_id,
@@ -680,6 +752,7 @@ async fn deliver_once(
                 state,
                 group_id,
                 actor_id,
+                owner,
                 json!({
                     "last_delivery_status":"failed",
                     "last_submission_evidence":{
@@ -690,7 +763,9 @@ async fn deliver_once(
                     "last_error":message.as_str()
                 }),
             )?;
-            record_connector(state, group_id, actor_id, "failed", turn_id, &message)?;
+            record_connector(
+                state, group_id, actor_id, owner, "failed", turn_id, &message,
+            )?;
             record_delivery(
                 state,
                 group_id,
@@ -711,6 +786,7 @@ async fn deliver_once(
                 group_id,
                 actor_id,
                 DeliveryAttempt {
+                    owner,
                     turn_id,
                     event_ids: turn["event_ids"].clone(),
                     delivery_id: &delivery_id,
@@ -724,6 +800,7 @@ async fn deliver_once(
         state,
         group_id,
         actor_id,
+        owner,
         completion_pending_patch(
             turn_id,
             turn["event_ids"].clone(),
@@ -766,6 +843,7 @@ async fn deliver_once(
             state,
             group_id,
             actor_id,
+            owner,
             json!({"last_delivery_status":"completion_ambiguous","last_delivery_turn_id":turn_id,"last_delivery_event_ids":turn["event_ids"],"last_delivery_reconcile_attempts":0,"last_submission_evidence":browser,"last_error":error.to_string()}),
         )?;
         tracing::warn!(
@@ -788,7 +866,7 @@ async fn deliver_once(
         {
             Ok(Some(conversation_url)) => {
                 if let Err(error) =
-                    bind_new_chat_target(state, group_id, actor_id, &conversation_url)
+                    bind_new_chat_target(state, group_id, actor_id, owner, &conversation_url)
                 {
                     bind_error = error.to_string();
                 } else {
@@ -832,12 +910,12 @@ async fn deliver_once(
             .expect("pending new chat patch"),
         );
     }
-    update_target(state, group_id, actor_id, final_patch)?;
+    update_target(state, group_id, actor_id, owner, final_patch)?;
     // Keep the existing connector-facing status coherent with the target
     // before the best-effort ledger receipt performs an async daemon call.
     // Otherwise observers can see a submitted target while the connector
     // still exposes the preceding MCP probe status.
-    record_connector(state, group_id, actor_id, "submitted", turn_id, "")?;
+    record_connector(state, group_id, actor_id, owner, "submitted", turn_id, "")?;
     if !bound_conversation_url.is_empty() {
         record_delivery(
             state,
@@ -878,6 +956,38 @@ async fn deliver_once(
     Ok(DeliveryOutcome::Submitted)
 }
 
+async fn acquire_dispatch_permit(
+    state: &AppState,
+    group_id: &str,
+    actor_id: &str,
+    owner: &BrowserTargetOwner,
+    status: &str,
+) -> anyhow::Result<std::fs::File> {
+    let home = state.home.clone();
+    let group_id = group_id.to_owned();
+    let actor_id = actor_id.to_owned();
+    let owner = owner.clone();
+    let status = status.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let permit = cccc_core::web_model_connectors::browser_dispatch_permit(
+            &home, &group_id, &actor_id, &owner,
+        )?
+        .ok_or_else(|| anyhow::anyhow!("browser binding or target changed before Send"))?;
+        let patch = json!({"last_delivery_status":status});
+        if !cccc_core::web_model_connectors::update_browser_target(
+            &home,
+            &group_id,
+            &actor_id,
+            &owner,
+            patch.as_object().expect("dispatch patch"),
+        )? {
+            anyhow::bail!("browser attempt changed before Send");
+        }
+        Ok(permit)
+    })
+    .await?
+}
+
 // Reuse the native failed-delivery transition: it releases this exact reservation,
 // leaves the original message intact, and never acknowledges it as received.
 async fn retry_unsubmitted_turn(
@@ -887,6 +997,7 @@ async fn retry_unsubmitted_turn(
     attempt: DeliveryAttempt<'_>,
     error: &str,
 ) -> Result<DeliveryOutcome, ApiError> {
+    let owner = attempt.owner;
     record_delivery(
         state,
         group_id,
@@ -903,6 +1014,7 @@ async fn retry_unsubmitted_turn(
         state,
         group_id,
         actor_id,
+        owner,
         json!({
             "last_delivery_status":"deferred", "last_error":error,
             "last_submission_evidence":{"submitted":false,
@@ -913,11 +1025,15 @@ async fn retry_unsubmitted_turn(
         state,
         group_id,
         actor_id,
+        owner,
         "deferred",
         attempt.turn_id,
         error,
     )?;
-    Ok(DeliveryOutcome::Deferred(attempt.turn_id.to_owned()))
+    Ok(DeliveryOutcome::Deferred(
+        attempt.turn_id.to_owned(),
+        Box::new(owner.clone()),
+    ))
 }
 
 async fn complete_ambiguous_attempt(
@@ -928,10 +1044,12 @@ async fn complete_ambiguous_attempt(
     browser: Value,
     message: &str,
 ) -> Result<DeliveryOutcome, ApiError> {
+    let owner = attempt.owner;
     update_target(
         state,
         group_id,
         actor_id,
+        owner,
         json!({
             "last_delivery_status":"submission_ambiguous_completion_pending",
             "last_delivery_turn_id":attempt.turn_id,
@@ -976,6 +1094,7 @@ async fn complete_ambiguous_attempt(
         state,
         group_id,
         actor_id,
+        owner,
         json!({
             "last_delivery_status":completion_status,
             "last_error":if completion_error.is_empty() {message} else {&completion_error}
@@ -986,6 +1105,7 @@ async fn complete_ambiguous_attempt(
             state,
             group_id,
             actor_id,
+            owner,
             "ambiguous",
             attempt.turn_id,
             message,
@@ -1005,6 +1125,7 @@ async fn recover_verified_ambiguous_submission(
     state: &AppState,
     group_id: &str,
     actor_id: &str,
+    owner: &BrowserTargetOwner,
     target: &Value,
 ) -> Result<bool, ApiError> {
     let submission = &target["last_submission_evidence"];
@@ -1043,6 +1164,7 @@ async fn recover_verified_ambiguous_submission(
             state,
             group_id,
             actor_id,
+            owner,
             conversation_url.as_deref().unwrap_or(target_url),
             seed,
         )?;
@@ -1050,7 +1172,7 @@ async fn recover_verified_ambiguous_submission(
     if target["kind"] == "new_chat"
         && let Some(conversation_url) = &conversation_url
     {
-        bind_new_chat_target(state, group_id, actor_id, conversation_url)?;
+        bind_new_chat_target(state, group_id, actor_id, owner, conversation_url)?;
     }
     let pending_new_chat_bind = target["kind"] == "new_chat" && conversation_url.is_none();
     let mut recovered_submission = submission.clone();
@@ -1063,6 +1185,7 @@ async fn recover_verified_ambiguous_submission(
         state,
         group_id,
         actor_id,
+        owner,
         json!({
             "last_delivery_status":if pending_new_chat_bind {"pending_new_chat_bind"} else {"submitted"},
             "last_delivery_at":cccc_contracts::utc_now(),
@@ -1070,7 +1193,7 @@ async fn recover_verified_ambiguous_submission(
             "last_error":if pending_new_chat_bind {"conversation_url_pending"} else {""}
         }),
     )?;
-    record_connector(state, group_id, actor_id, "submitted", turn_id, "")?;
+    record_connector(state, group_id, actor_id, owner, "submitted", turn_id, "")?;
     tracing::info!(
         group_id,
         actor_id,
@@ -1099,6 +1222,7 @@ async fn recover_legacy_pending_delivery(
     state: &AppState,
     group_id: &str,
     actor_id: &str,
+    owner: &BrowserTargetOwner,
     session_key: &str,
     target: &Value,
 ) -> Result<DeliveryOutcome, ApiError> {
@@ -1122,6 +1246,7 @@ async fn recover_legacy_pending_delivery(
             state,
             group_id,
             actor_id,
+            owner,
             json!({
                 "last_delivery_status":"legacy_submission_unverified",
                 "last_submission_evidence":inspection,
@@ -1132,6 +1257,7 @@ async fn recover_legacy_pending_delivery(
             state,
             group_id,
             actor_id,
+            owner,
             "ambiguous",
             target["last_delivery_turn_id"].as_str().unwrap_or(""),
             message,
@@ -1157,10 +1283,11 @@ async fn recover_legacy_pending_delivery(
         &event_label,
     )?;
     let attachment = compatibility_attachment(state, turn, &delivery_id)?;
-    update_target(
+    if !update_target(
         state,
         group_id,
         actor_id,
+        owner,
         json!({
             "last_delivery_id":delivery_id,
             "last_delivery_turn_id":turn_id,
@@ -1169,15 +1296,28 @@ async fn recover_legacy_pending_delivery(
             "last_delivery_started_at":cccc_contracts::utc_now(),
             "last_error":""
         }),
-    )?;
+    )? {
+        return Ok(DeliveryOutcome::Idle);
+    }
+    let target_owner = owner.for_delivery(&delivery_id);
+    let owner = &target_owner;
     let browser = match state
         .browser_surfaces
-        .submit_prompt_with_attachment(
+        .submit_prompt_with_attachment_before_dispatch(
             session_key,
             target_url,
             &browser_prompt,
             attachment.as_deref(),
             &delivery_id,
+            || {
+                acquire_dispatch_permit(
+                    state,
+                    group_id,
+                    actor_id,
+                    owner,
+                    "legacy_recovery_submitting",
+                )
+            },
         )
         .await
     {
@@ -1188,13 +1328,17 @@ async fn recover_legacy_pending_delivery(
                 state,
                 group_id,
                 actor_id,
+                owner,
                 json!({
                     "last_delivery_status":"legacy_submission_unverified",
                     "last_submission_evidence":browser,
                     "last_error":message
                 }),
             )?;
-            return Ok(DeliveryOutcome::Deferred(turn_id.to_owned()));
+            return Ok(DeliveryOutcome::Deferred(
+                turn_id.to_owned(),
+                Box::new(owner.clone()),
+            ));
         }
         Ok(PromptSubmissionOutcome::Ambiguous(browser)) => {
             let message = "legacy recovery attempted submission but could not verify whether ChatGPT accepted it; automatic redelivery is paused";
@@ -1202,6 +1346,7 @@ async fn recover_legacy_pending_delivery(
                 state,
                 group_id,
                 actor_id,
+                owner,
                 json!({
                     "last_delivery_status":"submission_ambiguous",
                     "last_submission_evidence":browser,
@@ -1209,7 +1354,15 @@ async fn recover_legacy_pending_delivery(
                     "last_delivery_at":cccc_contracts::utc_now()
                 }),
             )?;
-            record_connector(state, group_id, actor_id, "ambiguous", turn_id, message)?;
+            record_connector(
+                state,
+                group_id,
+                actor_id,
+                owner,
+                "ambiguous",
+                turn_id,
+                message,
+            )?;
             return Ok(DeliveryOutcome::Ambiguous);
         }
         Err(error) => {
@@ -1217,6 +1370,7 @@ async fn recover_legacy_pending_delivery(
                 state,
                 group_id,
                 actor_id,
+                owner,
                 json!({"last_delivery_status":"failed","last_error":error.to_string()}),
             )?;
             return Err(ApiError::unavailable(
@@ -1226,7 +1380,7 @@ async fn recover_legacy_pending_delivery(
         }
     };
     if let Some(seed) = &bootstrap_seed {
-        mark_bootstrap_seed_delivered(state, group_id, actor_id, target_url, seed)?;
+        mark_bootstrap_seed_delivered(state, group_id, actor_id, owner, target_url, seed)?;
     }
     let conversation_url = state
         .browser_surfaces
@@ -1237,12 +1391,13 @@ async fn recover_legacy_pending_delivery(
         })?;
     let pending = conversation_url.is_none();
     if let Some(conversation_url) = conversation_url {
-        bind_new_chat_target(state, group_id, actor_id, &conversation_url)?;
+        bind_new_chat_target(state, group_id, actor_id, owner, &conversation_url)?;
     }
     update_target(
         state,
         group_id,
         actor_id,
+        owner,
         json!({
             "last_delivery_status":if pending {"pending_new_chat_bind"} else {"submitted"},
             "last_delivery_at":cccc_contracts::utc_now(),
@@ -1250,7 +1405,7 @@ async fn recover_legacy_pending_delivery(
             "last_error":if pending {"conversation_url_pending"} else {""}
         }),
     )?;
-    record_connector(state, group_id, actor_id, "submitted", turn_id, "")?;
+    record_connector(state, group_id, actor_id, owner, "submitted", turn_id, "")?;
     Ok(DeliveryOutcome::Submitted)
 }
 
@@ -1414,6 +1569,7 @@ fn mark_bootstrap_seed_delivered(
     state: &AppState,
     group_id: &str,
     actor_id: &str,
+    owner: &BrowserTargetOwner,
     target_url: &str,
     seed: &BootstrapSeed,
 ) -> Result<(), ApiError> {
@@ -1421,6 +1577,7 @@ fn mark_bootstrap_seed_delivered(
         state,
         group_id,
         actor_id,
+        owner,
         json!({
             "bootstrap_seed_delivered_at":cccc_contracts::utc_now(),
             "bootstrap_seed_version":BOOTSTRAP_SEED_VERSION,
@@ -1428,12 +1585,14 @@ fn mark_bootstrap_seed_delivered(
             "bootstrap_seed_conversation_url":target_url
         }),
     )
+    .map(|_| ())
 }
 
 async fn resolve_pending_new_chat(
     state: &AppState,
     group_id: &str,
     actor_id: &str,
+    owner: &BrowserTargetOwner,
     session_key: &str,
     target: &Value,
 ) -> Result<DeliveryOutcome, ApiError> {
@@ -1450,15 +1609,17 @@ async fn resolve_pending_new_chat(
             state,
             group_id,
             actor_id,
+            owner,
             json!({"last_delivery_status":"pending_new_chat_bind","last_error":"conversation_url_pending"}),
         )?;
         return Ok(DeliveryOutcome::Ambiguous);
     };
-    bind_new_chat_target(state, group_id, actor_id, &conversation_url)?;
+    bind_new_chat_target(state, group_id, actor_id, owner, &conversation_url)?;
     update_target(
         state,
         group_id,
         actor_id,
+        owner,
         json!({"last_delivery_status":"submitted","last_error":""}),
     )?;
     if let (Some(turn_id), Some(delivery_id), Some(event_ids)) = (
@@ -1490,6 +1651,7 @@ fn bind_new_chat_target(
     state: &AppState,
     group_id: &str,
     actor_id: &str,
+    owner: &BrowserTargetOwner,
     conversation_url: &str,
 ) -> Result<(), ApiError> {
     let now = cccc_contracts::utc_now();
@@ -1497,6 +1659,7 @@ fn bind_new_chat_target(
         state,
         group_id,
         actor_id,
+        owner,
         json!({
             "state":"bound_existing_chat",
             "kind":"existing_chat",
@@ -1507,6 +1670,7 @@ fn bind_new_chat_target(
             "bootstrap_seed_conversation_url":conversation_url
         }),
     )
+    .map(|_| ())
 }
 
 fn required<'a>(value: &'a Value, key: &str) -> Result<&'a str, ApiError> {
@@ -1518,6 +1682,7 @@ fn required<'a>(value: &'a Value, key: &str) -> Result<&'a str, ApiError> {
 
 #[cfg(test)]
 mod retry_integration_tests {
+    use super::super::web_model_delivery_state::target as load_target;
     use super::*;
     use cccc_core::{GroupStore, HomeLayout, ledger, web_model_connectors};
     use std::sync::Arc;
@@ -2760,13 +2925,13 @@ mod retry_integration_tests {
             .expect("reserve");
             assert_eq!(wait["status"], "work_available");
             let turn = &wait["turn"];
-            update_target(&state,gid,"web",json!({"last_delivery_status":"preparing",
+            update_target(&state,gid,"web", &snapshot(&state,gid,"web").expect("target owner").1, json!({"last_delivery_status":"preparing",
                 "last_delivery_turn_id":turn["turn_id"],"last_delivery_event_ids":turn["event_ids"],
                 "last_delivery_id":browser_delivery_id("web",turn["turn_id"].as_str().expect("turn")),
                 "last_submission_evidence":null})).expect("persist pre-send interruption");
             assert!(matches!(
                 deliver_pending(&state, gid, "web").await.expect("release"),
-                DeliveryOutcome::Deferred(_)
+                DeliveryOutcome::Deferred(..)
             ));
             assert!(matches!(
                 deliver_pending(&state, gid, "web").await.expect("retry"),
@@ -2818,5 +2983,426 @@ mod retry_integration_tests {
         result
             .expect("pre-send assertions")
             .expect("bounded pre-send test");
+    }
+    #[derive(Clone, Copy, PartialEq)]
+    enum BindingRace {
+        BeforeSend,
+        ContentEditable,
+        EditedContentEditable,
+        EditedDraft,
+        AfterSend,
+        AfterUnverifiedSend,
+    }
+
+    #[tokio::test]
+    async fn rebinding_cancels_the_old_inflight_delivery() {
+        binding_race(BindingRace::BeforeSend).await;
+    }
+
+    #[tokio::test]
+    async fn rebinding_preserves_a_user_edited_draft() {
+        binding_race(BindingRace::EditedDraft).await;
+    }
+
+    #[tokio::test]
+    async fn rebinding_after_send_preserves_the_receipt_without_overwriting_the_new_target() {
+        binding_race(BindingRace::AfterSend).await;
+    }
+
+    #[tokio::test]
+    async fn rebinding_after_send_preserves_an_uncertain_receipt_without_retrying() {
+        binding_race(BindingRace::AfterUnverifiedSend).await;
+    }
+
+    #[tokio::test]
+    async fn rebinding_clears_only_its_contenteditable_draft() {
+        binding_race(BindingRace::ContentEditable).await;
+        binding_race(BindingRace::EditedContentEditable).await;
+    }
+
+    async fn binding_race(phase: BindingRace) {
+        let edited = matches!(
+            phase,
+            BindingRace::EditedDraft | BindingRace::EditedContentEditable
+        );
+        let already_sent = matches!(
+            phase,
+            BindingRace::AfterSend | BindingRace::AfterUnverifiedSend
+        );
+        assert!(
+            crate::system_browser_path().is_some(),
+            "real Chrome required"
+        );
+        let temp = tempfile::tempdir().expect("isolated home");
+        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+        home.initialize().expect("init");
+        let (shutdown, _) = tokio::sync::broadcast::channel(1);
+        let (_, _, browser, state) = crate::app_with_shutdown(
+            home.clone(),
+            shutdown.clone(),
+            crate::WebMode::Normal,
+            None,
+            crate::LiveBinding {
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
+            "rebind-test".into(),
+        );
+        let daemon_home = home.clone();
+        let daemon = tokio::spawn(async move { cccc_daemon::run(daemon_home).await });
+        for _ in 0..100 {
+            if daemon_call(&state, "ping", Default::default())
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let url = format!("http://{}/", listener.local_addr().expect("addr"));
+        let app = axum::Router::new().fallback(axum::routing::get(|| async {
+            axum::response::Html(r#"<!doctype html><textarea id="prompt-textarea"></textarea><button data-testid="send-button" disabled>Send</button><script>
+            window.sends=0;window.holdReceipt=false;
+            window.draft=()=>{const c=document.querySelector('#prompt-textarea');return c.isContentEditable?c.innerText:c.value};
+            window.replaceDraft=text=>{const c=document.querySelector('#prompt-textarea');if(c.isContentEditable)c.innerText=text;else c.value=text};
+            window.releaseReceipt=()=>{let n=document.createElement('div');n.dataset.messageAuthorRole='user';n.textContent=draft();document.body.append(n);replaceDraft('')};
+            document.querySelector('button').onclick=()=>{sends++;if(!holdReceipt)releaseReceipt()};
+            if(location.pathname==='/new')document.querySelector('button').disabled=false;
+            </script>"#)
+        }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let operation = async {
+            let call =
+                |op, args: Value| daemon_call(&state, op, args.as_object().cloned().expect("args"));
+            let group = call("group_create", json!({"title":"rebind race"}))
+                .await
+                .expect("group");
+            let gid = group["group"]["group_id"].as_str().expect("gid");
+            call("actor_add",json!({"group_id":gid,"actor_id":"web","runtime":"web_model","by":"user","env":{"CCCC_WEB_MODEL_DELIVERY_MODE":"browser"}})).await.expect("actor");
+            call(
+                "actor_start",
+                json!({"group_id":gid,"actor_id":"web","by":"user"}),
+            )
+            .await
+            .expect("start");
+            let (connector, _) = web_model_connectors::create(&home, gid, "web", "chatgpt", "test")
+                .expect("connector");
+            let cid = connector["connector_id"].as_str().expect("cid");
+            let code = web_model_connectors::prepare_binding(&home, cid, 600).expect("code");
+            web_model_connectors::bind_session(
+                &home,
+                cid,
+                code["code"].as_str().expect("F1 browser fixture value"),
+                "old-chat",
+            )
+            .expect("old binding");
+            web_model_connectors::save_browser_target(
+                &home,
+                gid,
+                "web",
+                Some(json!({"kind":"existing_chat","url":url})),
+            )
+            .expect("target");
+            let source=call("send",json!({"group_id":gid,"by":"user","to":["web"],"text":"OLD_CHAT_ONLY_REPORT","message_mode":"send"})).await.expect("source");
+            browser
+                .ensure_open(surface_key(), &temp.path().join("browser"), &url, 800, 600)
+                .await
+                .expect("browser");
+            let page = browser
+                .sessions
+                .lock()
+                .await
+                .get(surface_key())
+                .expect("F1 browser fixture value")
+                .page
+                .clone();
+            if matches!(
+                phase,
+                BindingRace::ContentEditable | BindingRace::EditedContentEditable
+            ) {
+                page.evaluate("document.querySelector('#prompt-textarea').outerHTML='<div id=prompt-textarea contenteditable=true role=textbox style=width:600px;min-height:80px></div>'")
+                    .await.expect("real contenteditable composer");
+            }
+            if already_sent {
+                page.evaluate(
+                    "window.holdReceipt=true;document.querySelector('button').disabled=false",
+                )
+                .await
+                .expect("hold receipt after Send");
+            }
+            let change_binding = async {
+                timeout(Duration::from_secs(8), async {
+                    loop {
+                        let condition = if already_sent {
+                            "window.sends===1"
+                        } else {
+                            "window.draft().includes('OLD_CHAT_ONLY_REPORT')"
+                        };
+                        if page
+                            .evaluate(condition)
+                            .await
+                            .expect("browser boundary")
+                            .into_value::<bool>()
+                            .expect("F1 browser fixture value")
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("browser reached binding boundary");
+                if edited {
+                    page.evaluate("window.replaceDraft('My changed unsent draft')")
+                        .await
+                        .expect("human edits the draft");
+                }
+                let old_snapshot = snapshot(&state, gid, "web").expect("original attempt");
+                let binding_home = home.clone();
+                let connector_id = cid.to_owned();
+                tokio::task::spawn_blocking(move || {
+                    let replacement =
+                        web_model_connectors::prepare_binding(&binding_home, &connector_id, 600)
+                            .expect("replacement");
+                    web_model_connectors::bind_session(
+                        &binding_home,
+                        &connector_id,
+                        replacement["code"]
+                            .as_str()
+                            .expect("F1 browser fixture value"),
+                        "new-chat",
+                    )
+                    .expect("rebound");
+                })
+                .await
+                .expect("binding thread");
+                assert!(
+                    web_model_connectors::find_session(&home, "old-chat")
+                        .expect("F1 browser fixture value")
+                        .is_none()
+                );
+                assert_eq!(
+                    web_model_connectors::browser_target(&home, gid, "web")
+                        .expect("F1 browser fixture value"),
+                    json!({})
+                );
+                if already_sent {
+                    web_model_connectors::save_browser_target(&home, gid, "web", Some(json!({
+                        "kind":"existing_chat","url":format!("{url}new"),
+                        "last_delivery_id":"new-binding-sentinel","last_delivery_status":"new_binding"
+                    }))).expect("new target before old receipt");
+                    web_model_connectors::update_connector(&home, cid, |item| {
+                        item["last_call_status"] = json!("new_binding");
+                    })
+                    .expect("new connector activity");
+                    if phase == BindingRace::AfterSend {
+                        page.evaluate("window.releaseReceipt()")
+                            .await
+                            .expect("release old receipt");
+                    }
+                } else {
+                    page.evaluate("document.querySelector('button').disabled=false")
+                        .await
+                        .expect("ready after rebind");
+                }
+                old_snapshot
+            };
+            let (delivered, (old_target, old_owner)) =
+                tokio::join!(deliver_pending(&state, gid, "web"), change_binding);
+            let sends = page
+                .evaluate("window.sends")
+                .await
+                .expect("count")
+                .into_value::<u64>()
+                .expect("F1 browser fixture value");
+            if already_sent {
+                eprintln!(
+                    "REBIND_AFTER_SEND source={} sends_in_original_chat={sends} outcome_submitted={}",
+                    source["event"]["id"],
+                    matches!(delivered, Ok(DeliveryOutcome::Submitted))
+                );
+            } else {
+                eprintln!(
+                    "REBIND_AFTER_STAGE source={} sends_after_old_chat_revoked={sends} outcome_submitted={}",
+                    source["event"]["id"],
+                    matches!(delivered, Ok(DeliveryOutcome::Submitted))
+                );
+            }
+            let store = GroupStore::new(home.clone()).expect("store");
+            let ledger_path = store.ledger_path(gid).expect("ledger");
+            let source_id = source["event"]["id"]
+                .as_str()
+                .expect("F1 browser fixture value");
+            if already_sent {
+                assert_eq!(sends, 1, "Send already started before binding changed");
+                assert!(if phase == BindingRace::AfterSend {
+                    matches!(delivered, Ok(DeliveryOutcome::Submitted))
+                } else {
+                    matches!(delivered, Ok(DeliveryOutcome::Ambiguous))
+                });
+                let replacement = load_target(&state, gid, "web").expect("replacement target");
+                assert_eq!(replacement["last_delivery_id"], "new-binding-sentinel");
+                assert_eq!(replacement["last_delivery_status"], "new_binding");
+                assert_eq!(
+                    web_model_connectors::load(&home)
+                        .expect("F1 browser fixture value")
+                        .iter()
+                        .find(|item| item["connector_id"] == cid)
+                        .expect("F1 browser fixture value")["last_call_status"],
+                    "new_binding"
+                );
+                bind_new_chat_target(
+                    &state,
+                    gid,
+                    "web",
+                    &old_owner,
+                    "https://chatgpt.com/c/late-old-chat",
+                )
+                .expect("stale URL result");
+                retry_unsubmitted_turn(
+                    &state,
+                    gid,
+                    "web",
+                    DeliveryAttempt {
+                        owner: &old_owner,
+                        turn_id: old_target["last_delivery_turn_id"]
+                            .as_str()
+                            .expect("F1 browser fixture value"),
+                        event_ids: old_target["last_delivery_event_ids"].clone(),
+                        delivery_id: old_target["last_delivery_id"]
+                            .as_str()
+                            .expect("F1 browser fixture value"),
+                    },
+                    "late old failure",
+                )
+                .await
+                .expect("stale failure receipt");
+                assert_eq!(
+                    load_target(&state, gid, "web").expect("F1 browser fixture value"),
+                    replacement,
+                    "late URL/failure overwrote new target"
+                );
+                assert!(matches!(
+                    deliver_pending(&state, gid, "web")
+                        .await
+                        .expect("F1 browser fixture value"),
+                    DeliveryOutcome::Idle
+                ));
+            } else {
+                assert_eq!(
+                    sends, 0,
+                    "old chat received the report after binding was revoked"
+                );
+                assert!(matches!(delivered, Ok(DeliveryOutcome::Deferred(..))));
+                if let Ok(DeliveryOutcome::Deferred(_, deferred_owner)) = &delivered {
+                    assert!(
+                        deferred_owner.as_ref() == &old_owner,
+                        "retry budget must retain its original owner"
+                    );
+                }
+                assert_eq!(
+                    load_target(&state, gid, "web").expect("F1 browser fixture value"),
+                    json!({}),
+                    "cancelled attempt revived old target"
+                );
+
+                let draft = page
+                    .evaluate("window.draft()")
+                    .await
+                    .expect("F1 browser fixture value")
+                    .into_value::<String>()
+                    .expect("F1 browser fixture value");
+                if edited {
+                    assert_eq!(draft, "My changed unsent draft");
+                } else {
+                    assert!(
+                        browser
+                            .relay_surface_idle(surface_key())
+                            .await
+                            .expect("composer state"),
+                        "cancelled program draft still blocks the shared browser"
+                    );
+                }
+                let events = ledger::read_all(&ledger_path).expect("cancelled ledger");
+                assert!(
+                    events.iter().any(|event| event.kind == "runtime.delivery"
+                        && event.data["source_event_id"] == source_id
+                        && event.data["state"] == "failed"),
+                    "original report was not released for retry"
+                );
+                if edited {
+                    page.evaluate("window.replaceDraft('')")
+                        .await
+                        .expect("human clears own draft");
+                }
+                web_model_connectors::save_browser_target(
+                    &home,
+                    gid,
+                    "web",
+                    Some(json!({"kind":"existing_chat","url":format!("{url}new")})),
+                )
+                .expect("select new conversation");
+                assert!(matches!(
+                    deliver_pending(&state, gid, "web")
+                        .await
+                        .expect("retry original report"),
+                    DeliveryOutcome::Submitted
+                ));
+                assert_eq!(
+                    page.evaluate("window.sends")
+                        .await
+                        .expect("F1 browser fixture value")
+                        .into_value::<u64>()
+                        .expect("F1 browser fixture value"),
+                    1
+                );
+                assert!(matches!(
+                    deliver_pending(&state, gid, "web")
+                        .await
+                        .expect("F1 browser fixture value"),
+                    DeliveryOutcome::Idle
+                ));
+            }
+            let events = ledger::read_all(&ledger_path).expect("final ledger");
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.kind == "chat.message")
+                    .count(),
+                1,
+                "original report was duplicated"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.kind == "runtime.delivery"
+                        && event.data["source_event_id"] == source_id
+                        && event.data["state"]
+                            == if phase == BindingRace::AfterUnverifiedSend {
+                                "ambiguous"
+                            } else {
+                                "accepted"
+                            })
+                    .count(),
+                1,
+                "report must have one terminal handoff fact"
+            );
+        };
+        let result = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(timeout(
+            Duration::from_secs(20),
+            operation,
+        )))
+        .await;
+        let _ = browser.close(surface_key()).await;
+        let _ = daemon_call(&state, "shutdown", Default::default()).await;
+        let _ = timeout(Duration::from_secs(5), daemon).await;
+        server.abort();
+        let _ = server.await;
+        result
+            .expect("binding race assertions")
+            .expect("bounded test");
     }
 }

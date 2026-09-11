@@ -315,6 +315,7 @@ pub fn normalized_chatgpt_conversation_url(value: &str) -> Option<String> {
 }
 
 pub fn replace_active(home: &HomeLayout, connector: &Value) -> io::Result<Vec<String>> {
+    let _dispatch = lock_browser_dispatch(home)?;
     update(home, |items| {
         let id = connector["connector_id"].as_str().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "connector_id is required")
@@ -347,6 +348,7 @@ pub fn replace_active(home: &HomeLayout, connector: &Value) -> io::Result<Vec<St
 }
 
 pub fn revoke(home: &HomeLayout, connector_id: &str) -> io::Result<bool> {
+    let _dispatch = lock_browser_dispatch(home)?;
     update(home, |items| {
         let Some(item) = items.get_mut(connector_id) else {
             return Ok(false);
@@ -358,6 +360,7 @@ pub fn revoke(home: &HomeLayout, connector_id: &str) -> io::Result<bool> {
 }
 
 pub fn retire_actor(home: &HomeLayout, group_id: &str, actor_id: &str) -> io::Result<Vec<Value>> {
+    let _dispatch = lock_browser_dispatch(home)?;
     update(home, |items| {
         let mut retired = Vec::new();
         let now = cccc_contracts::utc_now();
@@ -377,6 +380,7 @@ pub fn retire_actor(home: &HomeLayout, group_id: &str, actor_id: &str) -> io::Re
 }
 
 pub fn retire_group(home: &HomeLayout, group_id: &str) -> io::Result<Vec<Value>> {
+    let _dispatch = lock_browser_dispatch(home)?;
     update(home, |items| {
         let mut retired = Vec::new();
         let now = cccc_contracts::utc_now();
@@ -393,6 +397,7 @@ pub fn retire_group(home: &HomeLayout, group_id: &str) -> io::Result<Vec<Value>>
 }
 
 pub fn restore(home: &HomeLayout, entries: &[Value]) -> io::Result<()> {
+    let _dispatch = lock_browser_dispatch(home)?;
     if entries.is_empty() {
         return Ok(());
     }
@@ -496,6 +501,7 @@ pub fn bind_session(
     code: &str,
     session: &str,
 ) -> io::Result<Value> {
+    let _dispatch = lock_browser_dispatch(home)?;
     let session = session.trim();
     let code = code.trim();
     if session.is_empty() {
@@ -586,22 +592,157 @@ fn target_matches_binding(connector: Option<&Value>, target: &Value) -> bool {
     }
 }
 
-pub fn browser_target(home: &HomeLayout, group_id: &str, actor_id: &str) -> io::Result<Value> {
+/// Immutable ownership of one target and its current delivery attempt.
+#[derive(Clone, PartialEq)]
+pub struct BrowserTargetOwner {
+    connector_id: Value,
+    session_hash: Value,
+    session_bound_at: Value,
+    secret_hash: Value,
+    target_id: Value,
+    target_present: bool,
+    delivery_id: Value,
+}
+
+impl BrowserTargetOwner {
+    pub fn for_delivery(&self, delivery_id: &str) -> Self {
+        Self {
+            delivery_id: json!(delivery_id),
+            ..self.clone()
+        }
+    }
+}
+
+fn target_snapshot(
+    home: &HomeLayout,
+    group_id: &str,
+    actor_id: &str,
+    connectors: &Map<String, Value>,
+) -> io::Result<(Value, BrowserTargetOwner)> {
+    let connector = connectors.values().find(|item| {
+        item["group_id"] == group_id && item["actor_id"] == actor_id && item["revoked"] != true
+    });
+    let store = crate::GroupStore::new(home.clone())?;
+    let targets =
+        crate::integration_state::group_get(&store, group_id, "web_model_browser_targets")?;
+    let target = targets.get(actor_id).cloned().unwrap_or_else(|| json!({}));
+    let disconnected = connector.is_none()
+        && connectors
+            .values()
+            .any(|item| item["group_id"] == group_id && item["actor_id"] == actor_id);
+    let target = if !disconnected && target_matches_binding(connector, &target) {
+        target
+    } else {
+        json!({})
+    };
+    let connector = connector.unwrap_or(&Value::Null);
+    let owner = BrowserTargetOwner {
+        connector_id: connector["connector_id"].clone(),
+        session_hash: connector["session_hash"].clone(),
+        session_bound_at: connector["session_bound_at"].clone(),
+        secret_hash: connector["secret_hash"].clone(),
+        target_id: target["target_id"].clone(),
+        target_present: target.as_object().is_some_and(|value| !value.is_empty()),
+        delivery_id: target["last_delivery_id"].clone(),
+    };
+    Ok((target, owner))
+}
+
+pub fn browser_target_snapshot(
+    home: &HomeLayout,
+    group_id: &str,
+    actor_id: &str,
+) -> io::Result<(Value, BrowserTargetOwner)> {
     migrate_settings_store(home)?;
     fs::with_exclusive_lock(&lock_path(home), || {
+        target_snapshot(home, group_id, actor_id, &read_unlocked(&store_path(home))?)
+    })
+}
+
+pub fn browser_target(home: &HomeLayout, group_id: &str, actor_id: &str) -> io::Result<Value> {
+    browser_target_snapshot(home, group_id, actor_id).map(|(target, _)| target)
+}
+
+fn lock_browser_dispatch(home: &HomeLayout) -> io::Result<std::fs::File> {
+    fs::exclusive_lock(&home.root().join("state/web_model_dispatch.lock"))
+}
+
+/// Acquire on a blocking thread. Hold only across the final browser input, never
+/// while calling the daemon, waiting for the page, or verifying its receipt.
+pub fn browser_dispatch_permit(
+    home: &HomeLayout,
+    group_id: &str,
+    actor_id: &str,
+    expected: &BrowserTargetOwner,
+) -> io::Result<Option<std::fs::File>> {
+    let permit = lock_browser_dispatch(home)?;
+    let (target, owner) = browser_target_snapshot(home, group_id, actor_id)?;
+    let group = crate::GroupStore::new(home.clone())?.load(group_id)?;
+    let enabled = crate::actors::find(&group, actor_id).is_some_and(|actor| {
+        actor.enabled && actor.runtime == cccc_contracts::ActorRuntime::WebModel
+    });
+    Ok(
+        (enabled
+            && &owner == expected
+            && target.as_object().is_some_and(|value| !value.is_empty()))
+        .then_some(permit),
+    )
+}
+
+/// Compare ownership and patch under the same connector/group store locks.
+/// A stale receipt remains a ledger fact, but cannot change the current target.
+pub fn update_browser_target(
+    home: &HomeLayout,
+    group_id: &str,
+    actor_id: &str,
+    expected: &BrowserTargetOwner,
+    patch: &Map<String, Value>,
+) -> io::Result<bool> {
+    fs::with_exclusive_lock(&lock_path(home), || {
         let connectors = read_unlocked(&store_path(home))?;
-        let connector = connectors.values().find(|item| {
-            item["group_id"] == group_id && item["actor_id"] == actor_id && item["revoked"] != true
-        });
+        let (_, owner) = target_snapshot(home, group_id, actor_id, &connectors)?;
+        if &owner != expected {
+            return Ok(false);
+        }
         let store = crate::GroupStore::new(home.clone())?;
-        let targets =
-            crate::integration_state::group_get(&store, group_id, "web_model_browser_targets")?;
-        let target = targets.get(actor_id).cloned().unwrap_or_else(|| json!({}));
-        Ok(if target_matches_binding(connector, &target) {
-            target
-        } else {
-            json!({})
-        })
+        crate::integration_state::group_update(
+            &store,
+            group_id,
+            "web_model_browser_targets",
+            |targets| {
+                let Some(target) = targets.get_mut(actor_id).and_then(Value::as_object_mut) else {
+                    return Ok(false);
+                };
+                target.extend(patch.clone());
+                Ok(true)
+            },
+        )
+    })
+}
+
+pub fn update_browser_connector(
+    home: &HomeLayout,
+    group_id: &str,
+    actor_id: &str,
+    expected: &BrowserTargetOwner,
+    change: impl FnOnce(&mut Value),
+) -> io::Result<bool> {
+    fs::with_exclusive_lock(&lock_path(home), || {
+        let mut connectors = read_unlocked(&store_path(home))?;
+        let (_, owner) = target_snapshot(home, group_id, actor_id, &connectors)?;
+        if &owner != expected {
+            return Ok(false);
+        }
+        let Some(item) = expected
+            .connector_id
+            .as_str()
+            .and_then(|id| connectors.get_mut(id))
+        else {
+            return Ok(false);
+        };
+        change(item);
+        write_unlocked(&store_path(home), &connectors)?;
+        Ok(true)
     })
 }
 
@@ -613,6 +754,7 @@ pub fn save_browser_target(
     actor_id: &str,
     target: Option<Value>,
 ) -> io::Result<()> {
+    let _dispatch = lock_browser_dispatch(home)?;
     migrate_settings_store(home)?;
     fs::with_exclusive_lock(&lock_path(home), || {
         let connectors = read_unlocked(&store_path(home))?;
@@ -627,6 +769,7 @@ pub fn save_browser_target(
                     "invalid browser target",
                 ));
             }
+            target["target_id"] = json!(uuid::Uuid::new_v4().to_string());
             target
                 .as_object_mut()
                 .expect("object checked")
@@ -1171,6 +1314,292 @@ mod tests {
             find_session(&home, "new-chat")
                 .expect("new lookup")
                 .is_some()
+        );
+    }
+    fn replace_delivery_route(home: &HomeLayout, group_id: &str, action: &str) {
+        match action {
+            "bind" => {
+                bind_session(home, "route-a", &issue(home, "route-a"), "new-chat").expect("rebind");
+            }
+            "revoke" => {
+                assert!(revoke(home, "route-a").expect("revoke"));
+            }
+            "target" => {
+                save_browser_target(
+                    home,
+                    group_id,
+                    "web-lead",
+                    Some(json!({"kind":"existing_chat","url":"https://chatgpt.com/c/old"})),
+                )
+                .expect("replace same URL");
+            }
+            "clear" => {
+                save_browser_target(home, group_id, "web-lead", None).expect("clear target");
+            }
+            "rotate" => {
+                create(home, group_id, "web-lead", "chatgpt", "replacement")
+                    .expect("replace connector");
+            }
+            "retire_actor" => {
+                retire_actor(home, group_id, "web-lead").expect("retire actor");
+            }
+            "retire_group" => {
+                retire_group(home, group_id).expect("retire group");
+            }
+            _ => panic!("unknown route change"),
+        }
+    }
+
+    #[test]
+    fn obsolete_browser_attempts_cannot_write_any_part_of_the_replacement() {
+        for action in [
+            "bind",
+            "revoke",
+            "target",
+            "clear",
+            "rotate",
+            "retire_actor",
+            "retire_group",
+            "new_attempt",
+        ] {
+            let (_temp, home, groups) = session_fixture();
+            let group_id = &groups[0];
+            bind_session(&home, "route-a", &issue(&home, "route-a"), "old-chat")
+                .expect("old binding");
+            save_browser_target(&home, group_id, "web-lead", Some(json!({
+                "kind":"existing_chat","url":"https://chatgpt.com/c/old","last_delivery_id":"old-attempt"
+            }))).expect("old target");
+            let (_, owner) = browser_target_snapshot(&home, group_id, "web-lead").expect("owner");
+            if action == "new_attempt" {
+                assert!(
+                    update_browser_target(
+                        &home,
+                        group_id,
+                        "web-lead",
+                        &owner,
+                        json!({"last_delivery_id":"new-attempt"})
+                            .as_object()
+                            .expect("F1 connector fixture value")
+                    )
+                    .expect("new attempt")
+                );
+            } else {
+                replace_delivery_route(&home, group_id, action);
+            }
+            let store = crate::GroupStore::new(home.clone()).expect("store");
+            let before_target =
+                crate::integration_state::group_get(&store, group_id, "web_model_browser_targets")
+                    .expect("target before late response");
+            let before_connectors = load(&home).expect("connectors before late response");
+            for status in [
+                "submitted",
+                "failed",
+                "deferred",
+                "completion_ambiguous",
+                "pending_new_chat_bind",
+            ] {
+                assert!(!update_browser_target(&home, group_id, "web-lead", &owner,
+                    json!({"last_delivery_status":status,"url":"https://chatgpt.com/c/late-old-url"}).as_object().expect("F1 connector fixture value")).expect("conditional patch"), "{action}: {status}");
+                assert!(
+                    !update_browser_connector(&home, group_id, "web-lead", &owner, |item| {
+                        item["last_call_status"] = json!(status);
+                    })
+                    .expect("conditional activity"),
+                    "{action}: {status}"
+                );
+            }
+            assert_eq!(
+                crate::integration_state::group_get(&store, group_id, "web_model_browser_targets")
+                    .expect("target after"),
+                before_target,
+                "{action}"
+            );
+            assert_eq!(
+                load(&home).expect("connectors after"),
+                before_connectors,
+                "{action}"
+            );
+            assert!(
+                browser_dispatch_permit(&home, group_id, "web-lead", &owner)
+                    .expect("obsolete permit")
+                    .is_none(),
+                "{action}"
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_permit_orders_route_changes_across_processes_without_locking_reads() {
+        use fs2::FileExt;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        const CHILD_HOME: &str = "CCCC_TEST_BROWSER_DISPATCH_HOME";
+        if let Some(path) = std::env::var_os(CHILD_HOME) {
+            let home = HomeLayout::from_path(PathBuf::from(path)).expect("child home");
+            let group_id = std::env::var("CCCC_TEST_BROWSER_DISPATCH_GROUP").expect("group");
+            let action = std::env::var("CCCC_TEST_BROWSER_DISPATCH_ACTION").expect("action");
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(home.root().join("state/web_model_dispatch.lock"))
+                .expect("shared gate");
+            assert_eq!(
+                file.try_lock_exclusive()
+                    .expect_err("parent owns Send")
+                    .kind(),
+                fs2::lock_contended_error().kind()
+            );
+            std::fs::write(home.root().join("gate-observed"), "locked").expect("signal gate");
+            replace_delivery_route(&home, &group_id, &action);
+            return;
+        }
+        for action in [
+            "bind",
+            "revoke",
+            "target",
+            "clear",
+            "rotate",
+            "retire_actor",
+            "retire_group",
+        ] {
+            let (_temp, home, groups) = session_fixture();
+            bind_session(&home, "route-a", &issue(&home, "route-a"), "old-chat").expect("binding");
+            save_browser_target(
+                &home,
+                &groups[0],
+                "web-lead",
+                Some(json!({"kind":"existing_chat","url":"https://chatgpt.com/c/old"})),
+            )
+            .expect("target");
+            let (target, owner) =
+                browser_target_snapshot(&home, &groups[0], "web-lead").expect("snapshot");
+            let permit = browser_dispatch_permit(&home, &groups[0], "web-lead", &owner)
+                .expect("Send gate")
+                .expect("current owner");
+            let mut child = Command::new(std::env::current_exe().expect("test binary"))
+                .args(["--exact", "web_model_connectors::tests::dispatch_permit_orders_route_changes_across_processes_without_locking_reads", "--nocapture"])
+                .env(CHILD_HOME, home.root()).env("CCCC_TEST_BROWSER_DISPATCH_GROUP", &groups[0])
+                .env("CCCC_TEST_BROWSER_DISPATCH_ACTION", action)
+                .stdout(Stdio::null()).stderr(Stdio::piped()).spawn().expect("child writer");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !home.root().join("gate-observed").exists()
+                && child.try_wait().expect("child status").is_none()
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let blocked = home.root().join("gate-observed").exists()
+                && child.try_wait().expect("writer blocked").is_none();
+            // Reads and unrelated group work do not wait for the final browser input.
+            assert_eq!(
+                browser_target(&home, &groups[0], "web-lead").expect("read during Send"),
+                target
+            );
+            let store = crate::GroupStore::new(home.clone()).expect("store");
+            store
+                .mutate(&groups[1], |group| {
+                    group.title = "other group remains available".into();
+                    Ok(())
+                })
+                .expect("other group write");
+            drop(permit);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while child.try_wait().expect("completion status").is_none()
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if child.try_wait().expect("final status").is_none() {
+                let _ = child.kill();
+            }
+            let output = child.wait_with_output().expect("reap child");
+            assert!(blocked, "{action}: writer bypassed Send gate");
+            assert!(
+                output.status.success(),
+                "{action}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                browser_dispatch_permit(&home, &groups[0], "web-lead", &owner)
+                    .expect("old permission")
+                    .is_none(),
+                "{action}: old owner survived"
+            );
+        }
+    }
+
+    #[test]
+    fn revoking_an_unbound_connector_also_invalidates_its_browser_target() {
+        let (_temp, home, groups) = session_fixture();
+        save_browser_target(
+            &home,
+            &groups[0],
+            "web-lead",
+            Some(json!({"kind":"existing_chat","url":"https://chatgpt.com/c/unbound"})),
+        )
+        .expect("unbound target");
+        assert!(revoke(&home, "route-a").expect("revoke"));
+        assert_eq!(
+            browser_target(&home, &groups[0], "web-lead").expect("disconnected target"),
+            json!({})
+        );
+    }
+    #[test]
+    fn retained_targets_without_an_id_allow_receipts_but_not_writes_after_clear() {
+        let (_temp, home, groups) = session_fixture();
+        let store = crate::GroupStore::new(home.clone()).expect("store");
+        crate::integration_state::group_update(&store, &groups[0], "web_model_browser_targets", |targets| {
+            *targets = json!({"web-lead":{"kind":"new_chat","url":"https://chatgpt.com/","last_delivery_id":"retained-attempt"}});
+            Ok(())
+        }).expect("retained target");
+        let (_, owner) =
+            browser_target_snapshot(&home, &groups[0], "web-lead").expect("retained owner");
+        assert!(
+            update_browser_target(
+                &home,
+                &groups[0],
+                "web-lead",
+                &owner,
+                json!({"kind":"existing_chat","url":"https://chatgpt.com/c/resolved"})
+                    .as_object()
+                    .expect("F1 connector fixture value")
+            )
+            .expect("late URL for same target")
+        );
+        assert!(
+            update_browser_target(
+                &home,
+                &groups[0],
+                "web-lead",
+                &owner,
+                json!({"last_delivery_status":"submitted"})
+                    .as_object()
+                    .expect("F1 connector fixture value")
+            )
+            .expect("same attempt final receipt")
+        );
+        save_browser_target(&home, &groups[0], "web-lead", None).expect("clear");
+        assert!(
+            !update_browser_target(
+                &home,
+                &groups[0],
+                "web-lead",
+                &owner,
+                json!({"last_delivery_status":"failed"})
+                    .as_object()
+                    .expect("F1 connector fixture value")
+            )
+            .expect("obsolete receipt")
+        );
+        assert!(
+            !update_browser_connector(
+                &home,
+                &groups[0],
+                "web-lead",
+                &owner,
+                |item| item["last_call_status"] = json!("failed")
+            )
+            .expect("obsolete activity")
         );
     }
 }

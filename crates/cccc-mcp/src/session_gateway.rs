@@ -143,9 +143,17 @@ async fn call(
         let connector_id = connector["connector_id"]
             .as_str()
             .ok_or("session_binding_failed: connector has no identity")?;
-        return web_model_connectors::bind_session(home, connector_id, code, session)
-            .map(crate::router::tool_result)
-            .map_err(binding_error);
+        let home = home.clone();
+        let connector_id = connector_id.to_owned();
+        let code = code.to_owned();
+        let session = session.to_owned();
+        return tokio::task::spawn_blocking(move || {
+            web_model_connectors::bind_session(&home, &connector_id, &code, &session)
+        })
+        .await
+        .map_err(|error| binding_error(std::io::Error::other(error)))?
+        .map(crate::router::tool_result)
+        .map_err(binding_error);
     }
     let connector = web_model_connectors::find_session(home, session)
         .map_err(binding_error)?

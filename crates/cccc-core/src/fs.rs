@@ -120,6 +120,17 @@ pub fn with_exclusive_lock<T>(
     path: &Path,
     operation: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
+    let file = exclusive_lock(path)?;
+    let result = operation();
+    // The descriptor is dropped on return and releases the advisory lock even if an explicit
+    // unlock reports an OS-level error. Do not turn a committed operation into an ambiguous
+    // failure after its durable write has already completed.
+    let _ = FileExt::unlock(&file);
+    result
+}
+
+/// The returned descriptor owns the cross-process lock until it is dropped.
+pub fn exclusive_lock(path: &Path) -> io::Result<File> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -130,12 +141,7 @@ pub fn with_exclusive_lock<T>(
         .write(true)
         .open(path)?;
     file.lock_exclusive()?;
-    let result = operation();
-    // The descriptor is dropped on return and releases the advisory lock even if an explicit
-    // unlock reports an OS-level error. Do not turn a committed operation into an ambiguous
-    // failure after its durable write has already completed.
-    let _ = FileExt::unlock(&file);
-    result
+    Ok(file)
 }
 
 #[cfg(unix)]

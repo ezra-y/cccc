@@ -202,12 +202,19 @@ async fn bind_current(State(state): State<AppState>, Json(body): Json<Value>) ->
         }
         json!({"state":"bound_existing_chat","kind":"existing_chat","url":url,"saved_at":utc_now(),"next_delivery":"existing_chat"})
     };
-    cccc_core::web_model_connectors::save_browser_target(
-        &state.home,
-        &group_id,
-        &actor_id,
-        (!clear).then_some(target),
-    )
+    let home = state.home.clone();
+    let target_group = group_id.clone();
+    let target_actor = actor_id.clone();
+    tokio::task::spawn_blocking(move || {
+        cccc_core::web_model_connectors::save_browser_target(
+            &home,
+            &target_group,
+            &target_actor,
+            (!clear).then_some(target),
+        )
+    })
+    .await
+    .map_err(|error| ApiError::bad(error.to_string()))?
     .map_err(io_error)?;
     if !clear && current["active"].as_bool().unwrap_or(false) {
         super::web_model_delivery::ensure_worker(state.clone(), group_id.clone(), actor_id.clone())

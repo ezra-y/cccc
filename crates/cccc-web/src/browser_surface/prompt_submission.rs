@@ -112,6 +112,7 @@ impl BrowserSurfaces {
         }))
     }
 
+    #[cfg(test)]
     pub(crate) async fn submit_prompt_with_attachment(
         &self,
         key: &str,
@@ -133,7 +134,7 @@ impl BrowserSurfaces {
 
     // Err means no Send/Enter action was attempted. Once dispatch starts, all
     // uncertain outcomes are returned as Ambiguous, never as a retryable error.
-    pub(crate) async fn submit_prompt_with_attachment_before_dispatch<F, Fut>(
+    pub(crate) async fn submit_prompt_with_attachment_before_dispatch<F, Fut, Permit>(
         &self,
         key: &str,
         target_url: &str,
@@ -144,7 +145,7 @@ impl BrowserSurfaces {
     ) -> Result<PromptSubmissionOutcome>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<()>>,
+        Fut: std::future::Future<Output = Result<Permit>>,
     {
         if prompt.trim().is_empty() {
             bail!("browser prompt is empty");
@@ -267,9 +268,17 @@ impl BrowserSurfaces {
         }
         if !staged.composer_exact {
             focus_and_select_composer(&page).await?;
-            page.execute(InsertTextParams::new(prompt))
-                .await
-                .context("insert prompt into visible browser composer")?;
+            let ownership = json!({"install":true,"prompt":prompt,"delivery_id":delivery_id});
+            page.evaluate(format!("({OBSERVE_STAGED_PROMPT_SCRIPT})({ownership})"))
+                .await?;
+            let inserted = page.execute(InsertTextParams::new(prompt)).await;
+            let unobserved = page
+                .evaluate(format!(
+                    "({OBSERVE_STAGED_PROMPT_SCRIPT})({{install:false}})"
+                ))
+                .await;
+            inserted.context("insert prompt into visible browser composer")?;
+            unobserved?;
         }
         let mut baseline = wait_for_prompt_staged(&page, prompt, &needles).await?;
         if let Some(path) = attachment_path {
@@ -314,24 +323,34 @@ impl BrowserSurfaces {
                 )
                 .await),
             SendReadiness::Ready(probe) | SendReadiness::Missing(probe) => {
-                before_dispatch().await?;
+                let permit = match before_dispatch().await {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        self.clear_staged_prompt(key, prompt, delivery_id).await?;
+                        return Err(error);
+                    }
+                };
                 let request_submit = request_submit(&page, target_url).await;
                 match request_submit {
-                    Ok(result) if result.unsafe_state => Ok(self
-                        .classify_deferred_submission(
-                            key,
-                            &page,
-                            SubmissionAttempt {
-                                prompt,
-                                needles: &needles,
-                                input: &composer.descriptor,
-                                action: &result.action,
-                                baseline: &baseline,
-                            },
-                            "send_control_deferred",
-                        )
-                        .await),
+                    Ok(result) if result.unsafe_state => {
+                        drop(permit);
+                        Ok(self
+                            .classify_deferred_submission(
+                                key,
+                                &page,
+                                SubmissionAttempt {
+                                    prompt,
+                                    needles: &needles,
+                                    input: &composer.descriptor,
+                                    action: &result.action,
+                                    baseline: &baseline,
+                                },
+                                "send_control_deferred",
+                            )
+                            .await)
+                    }
                     Ok(result) if result.invoked => {
+                        drop(permit);
                         let action = if result.error.is_empty() {
                             result.action
                         } else {
@@ -351,20 +370,23 @@ impl BrowserSurfaces {
                             )
                             .await)
                     }
-                    Ok(_) if probe.running || probe.stop_visible => Ok(self
-                        .classify_deferred_submission(
-                            key,
-                            &page,
-                            SubmissionAttempt {
-                                prompt,
-                                needles: &needles,
-                                input: &composer.descriptor,
-                                action: &probe.descriptor,
-                                baseline: &baseline,
-                            },
-                            "send_control_deferred",
-                        )
-                        .await),
+                    Ok(_) if probe.running || probe.stop_visible => {
+                        drop(permit);
+                        Ok(self
+                            .classify_deferred_submission(
+                                key,
+                                &page,
+                                SubmissionAttempt {
+                                    prompt,
+                                    needles: &needles,
+                                    input: &composer.descriptor,
+                                    action: &probe.descriptor,
+                                    baseline: &baseline,
+                                },
+                                "send_control_deferred",
+                            )
+                            .await)
+                    }
                     Ok(_) => {
                         let current = page.url().await.ok().flatten().unwrap_or_default();
                         if bound_target_changed(target_url, &current) {
@@ -382,6 +404,7 @@ impl BrowserSurfaces {
                             Ok(input) => input.press_key("Enter").await.map(|_| ()),
                             Err(error) => Err(error),
                         };
+                        drop(permit);
                         let action = if press.is_ok() {
                             action.to_owned()
                         } else {
@@ -401,22 +424,43 @@ impl BrowserSurfaces {
                             )
                             .await)
                     }
-                    Err(_) => Ok(self
-                        .verify_attempt(
-                            key,
-                            &page,
-                            SubmissionAttempt {
-                                prompt,
-                                needles: &needles,
-                                input: &composer.descriptor,
-                                action: "form.requestSubmit:dispatch_unknown",
-                                baseline: &baseline,
-                            },
-                        )
-                        .await),
+                    Err(_) => {
+                        drop(permit);
+                        Ok(self
+                            .verify_attempt(
+                                key,
+                                &page,
+                                SubmissionAttempt {
+                                    prompt,
+                                    needles: &needles,
+                                    input: &composer.descriptor,
+                                    action: "form.requestSubmit:dispatch_unknown",
+                                    baseline: &baseline,
+                                },
+                            )
+                            .await)
+                    }
                 }
             }
         }
+    }
+
+    pub(crate) async fn clear_staged_prompt(
+        &self,
+        key: &str,
+        prompt: &str,
+        delivery_id: &str,
+    ) -> Result<()> {
+        let page = self.page(key).await?;
+        let payload = json!({"prompt":prompt,"delivery_id":delivery_id});
+        let cleared = page
+            .evaluate(format!("({CLEAR_STAGED_PROMPT_SCRIPT})({payload})"))
+            .await?
+            .into_value::<bool>()?;
+        if !cleared {
+            bail!("could not clear the cancelled browser prompt");
+        }
+        Ok(())
     }
 
     async fn classify_deferred_submission(
@@ -1584,4 +1628,50 @@ const ATTACHMENT_STATUS_SCRIPT: &str = r#"payload => {
     return { ready: marked || ownedInput || ownedPreview || previewNodes.length > 0, marked, dispatched,
         owned_input: ownedInput, owned_preview: ownedPreview, file_count: fileCount,
         preview_count: previewNodes.length, image_preview_count: imagePreviews.length };
+}"#;
+
+const OBSERVE_STAGED_PROMPT_SCRIPT: &str = r#"payload => {
+    const input = document.querySelector('[data-cccc-web-model-composer="cccc-web-model-composer"]');
+    if (!input) return;
+    if (input.__ccccStagingObserver) {
+        input.removeEventListener('input', input.__ccccStagingObserver);
+        delete input.__ccccStagingObserver;
+    }
+    if (!payload.install) return;
+    const normalize = text => String(text).replace(/\s+/g, ' ').trim();
+    const observe = event => {
+        const text = input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement
+            ? input.value : (input.innerText || input.textContent || '');
+        if (event.isTrusted && event.inputType === 'insertText'
+            && normalize(text) === normalize(payload.prompt)) {
+            input.__ccccStagedPrompt = {deliveryId:payload.delivery_id, text};
+        }
+    };
+    input.__ccccStagingObserver = observe;
+    input.addEventListener('input', observe, {once:true});
+}"#;
+
+const CLEAR_STAGED_PROMPT_SCRIPT: &str = r#"payload => {
+    const input = document.querySelector('[data-cccc-web-model-composer="cccc-web-model-composer"]');
+    const owned = input?.__ccccStagedPrompt;
+    if (!owned || owned.deliveryId !== payload.delivery_id) return true;
+    const normalize = text => String(text).replace(/\s+/g, ' ').trim();
+    if (normalize(owned.text) !== normalize(payload.prompt)) return true;
+    const text = () => input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement
+        ? input.value : (input.innerText || input.textContent || '');
+    if (text() !== owned.text) return true;
+    input.focus();
+    if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
+        input.setSelectionRange(0, input.value.length);
+    } else {
+        const range = document.createRange();
+        range.selectNodeContents(input);
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }
+    document.execCommand('delete', false);
+    if (normalize(text()) !== '') return false;
+    delete input.__ccccStagedPrompt;
+    return true;
 }"#;
