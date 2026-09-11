@@ -235,15 +235,8 @@ fn group_state_allows_delivery(running: bool, state: GroupState) -> bool {
 fn should_start_delivery_worker(event_trigger: bool, target: &serde_json::Value) -> bool {
     event_trigger
         || (target["last_delivery_status"] == "deferred"
-            && matches!(
-                target
-                    .pointer("/last_submission_evidence/submission_evidence")
-                    .and_then(serde_json::Value::as_str),
-                Some(
-                    "not_sent_chat_busy"
-                        | "not_sent_composer_occupied"
-                        | "not_sent_composer_unavailable"
-                )
+            && super::web_model_delivery::retryable_pre_send_deferral(
+                &target["last_submission_evidence"],
             ))
 }
 

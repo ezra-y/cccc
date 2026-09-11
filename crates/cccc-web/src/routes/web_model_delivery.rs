@@ -66,6 +66,13 @@ pub(super) async fn ensure_worker(state: AppState, group_id: String, actor_id: S
     spawn_worker(state, group_id, actor_id);
 }
 
+pub(super) fn retryable_pre_send_deferral(evidence: &Value) -> bool {
+    matches!(
+        evidence["submission_evidence"].as_str(),
+        Some("not_sent_chat_busy" | "not_sent_composer_occupied" | "not_sent_composer_unavailable")
+    )
+}
+
 fn spawn_worker(state: AppState, group_id: String, actor_id: String) {
     let session_key = key(&group_id, &actor_id);
     let Some(worker) = SessionGuard::acquire(&WORKERS, session_key.clone()) else {
@@ -622,14 +629,7 @@ async fn deliver_once(
     let browser = match submitted {
         Ok(PromptSubmissionOutcome::Verified(browser)) => browser,
         Ok(PromptSubmissionOutcome::Deferred(browser)) => {
-            let busy = matches!(
-                browser["submission_evidence"].as_str(),
-                Some(
-                    "not_sent_chat_busy"
-                        | "not_sent_composer_occupied"
-                        | "not_sent_composer_unavailable"
-                )
-            );
+            let busy = retryable_pre_send_deferral(&browser);
             let message = "browser model is not ready for a safe prompt submission";
             update_target(
                 state,
