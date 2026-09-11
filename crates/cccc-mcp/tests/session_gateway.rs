@@ -726,3 +726,372 @@ async fn bound_web_peer_keeps_native_role_permissions_and_updates_only_its_targe
     let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
     result.expect("peer assertions");
 }
+
+#[tokio::test]
+async fn unbound_chat_first_bind_selects_the_unique_web_member_under_a_local_foreman() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+    home.initialize().expect("initialize");
+    let daemon_home = home.clone();
+    let task = tokio::spawn(async move { cccc_daemon::run(daemon_home).await });
+    let client = DaemonClient::new(home.clone());
+    for _ in 0..100 {
+        if client
+            .call(&DaemonRequest {
+                v: 1,
+                op: "ping".into(),
+                args: Map::new(),
+            })
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let work_home = home.clone();
+    let work_client = client.clone();
+    let project = temp.path().join("lead-and-peer");
+    let elsewhere = temp.path().join("elsewhere");
+    std::fs::create_dir(&project).expect("project");
+    std::fs::create_dir(&elsewhere).expect("elsewhere");
+    let result = tokio::spawn(async move {
+        let created = daemon(
+            &work_client,
+            "group_create_with_scope",
+            json!({"path":project,"title":"lead and peer","by":"user","set_active":false}),
+        )
+        .await;
+        let gid = created["group_id"].as_str().expect("group").to_owned();
+        daemon(
+            &work_client,
+            "actor_add",
+            json!({"group_id":gid,"actor_id":"local-lead","runtime":"custom",
+            "command":["cat"],"by":"user"}),
+        )
+        .await;
+        daemon(
+            &work_client,
+            "actor_add",
+            json!({"group_id":gid,"actor_id":"web-peer","runtime":"web_model","by":"user"}),
+        )
+        .await;
+        let mut gateway = Gateway::start(&work_home);
+        let chat = Some("first-bind-chat");
+        let bind = gateway
+            .call(request(
+                "cccc_group_bind",
+                json!({"group":gid,"chat_url":"https://chatgpt.com/c/first-bind-chat"}),
+                chat,
+            ))
+            .await;
+        assert_eq!(payload(&bind)["role"], "peer", "{bind}");
+        assert_eq!(payload(&bind)["actor_id"], "web-peer", "{bind}");
+        assert_eq!(payload(&bind)["status"], "configured", "{bind}");
+        assert_eq!(payload(&bind)["callback_target_ready"], true, "{bind}");
+        assert_eq!(payload(&bind)["reused"], true, "{bind}");
+        let store = GroupStore::new(work_home.clone()).expect("store");
+        let group = store.load(&gid).expect("group");
+        assert_eq!(group.actors.len(), 2, "first bind changed the member list");
+        assert_eq!(
+            group.actors[0].id, "local-lead",
+            "local Foreman was replaced"
+        );
+        assert_eq!(group.actors[1].id, "web-peer");
+        assert_eq!(
+            group.extra["web_model_browser_targets"]["web-peer"]["url"],
+            "https://chatgpt.com/c/first-bind-chat"
+        );
+        assert!(
+            group.extra["web_model_browser_targets"]
+                .get("local-lead")
+                .is_none()
+        );
+        let boot = gateway
+            .call(request("cccc_bootstrap", json!({}), chat))
+            .await;
+        assert_eq!(payload(&boot)["session"]["group_id"], gid, "{boot}");
+        assert_eq!(payload(&boot)["session"]["actor_id"], "web-peer", "{boot}");
+        assert_eq!(payload(&boot)["session"]["role"], "peer", "{boot}");
+        let forbidden = gateway
+            .call(request(
+                "cccc_capability_use",
+                json!({"tool_name":"cccc_actor","tool_arguments":{"action":"add",
+                "actor_id":"forbidden","runtime":"custom","by":"user"}}),
+                chat,
+            ))
+            .await;
+        assert_eq!(
+            forbidden["result"]["isError"], true,
+            "the bound web peer received Foreman administration: {forbidden}"
+        );
+        let report = gateway
+            .call(request(
+                "cccc_message_send",
+                json!({"to":["user"],"mode":"send","text":"first-bind peer report"}),
+                chat,
+            ))
+            .await;
+        assert_ne!(report["result"]["isError"], true, "{report}");
+        let rebind = gateway
+            .call(request(
+                "cccc_group_bind",
+                json!({"group":gid,"chat_url":"https://chatgpt.com/c/first-bind-chat-2"}),
+                chat,
+            ))
+            .await;
+        assert_eq!(payload(&rebind)["actor_id"], "web-peer", "{rebind}");
+        assert_eq!(payload(&rebind)["callback_target_ready"], true, "{rebind}");
+        assert_eq!(
+            store.load(&gid).expect("group").extra["web_model_browser_targets"]["web-peer"]["url"],
+            "https://chatgpt.com/c/first-bind-chat-2"
+        );
+        let other = daemon(
+            &work_client,
+            "group_create_with_scope",
+            json!({"path":elsewhere,"title":"elsewhere","by":"user","set_active":false}),
+        )
+        .await;
+        let other_id = other["group_id"].as_str().expect("other group").to_owned();
+        let cross = gateway
+            .call(request("cccc_group_bind", json!({"group":other_id}), chat))
+            .await;
+        assert_eq!(error(&cross), "session_already_bound", "{cross}");
+        let steal = gateway
+            .call(request(
+                "cccc_group_bind",
+                json!({"group":gid,"chat_url":"https://chatgpt.com/c/competing-chat"}),
+                Some("competing-unbound-chat"),
+            ))
+            .await;
+        assert_eq!(error(&steal), "group_already_bound", "{steal}");
+        let boot = gateway
+            .call(request("cccc_bootstrap", json!({}), chat))
+            .await;
+        assert_eq!(payload(&boot)["session"]["actor_id"], "web-peer", "{boot}");
+        gateway.stop().await;
+    })
+    .await;
+    let _ = client
+        .call(&DaemonRequest {
+            v: 1,
+            op: "shutdown".into(),
+            args: Map::new(),
+        })
+        .await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+    result.expect("first-bind assertions");
+}
+
+#[tokio::test]
+async fn unbound_chat_first_bind_keeps_conflict_semantics_and_rejects_unusable_web_members() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+    home.initialize().expect("initialize");
+    let daemon_home = home.clone();
+    let task = tokio::spawn(async move { cccc_daemon::run(daemon_home).await });
+    let client = DaemonClient::new(home.clone());
+    for _ in 0..100 {
+        if client
+            .call(&DaemonRequest {
+                v: 1,
+                op: "ping".into(),
+                args: Map::new(),
+            })
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let work_home = home.clone();
+    let work_client = client.clone();
+    let project = temp.path().join("shapes");
+    std::fs::create_dir(&project).expect("projects");
+    let result = tokio::spawn(async move {
+        let local_only = daemon(
+            &work_client,
+            "group_create_with_scope",
+            json!({"path":project,"title":"local only","by":"user","set_active":false}),
+        )
+        .await;
+        let local_only_id = local_only["group_id"]
+            .as_str()
+            .expect("local-only")
+            .to_owned();
+        daemon(
+            &work_client,
+            "actor_add",
+            json!({"group_id":local_only_id,"actor_id":"solo-local","runtime":"custom",
+            "command":["cat"],"by":"user"}),
+        )
+        .await;
+        let disabled = daemon(
+            &work_client,
+            "group_create_with_scope",
+            json!({"path":project,"title":"disabled web","by":"user","set_active":false}),
+        )
+        .await;
+        let disabled_id = disabled["group_id"].as_str().expect("disabled").to_owned();
+        daemon(
+            &work_client,
+            "actor_add",
+            json!({"group_id":disabled_id,"actor_id":"local-lead","runtime":"custom",
+            "command":["cat"],"by":"user"}),
+        )
+        .await;
+        daemon(
+            &work_client,
+            "actor_add",
+            json!({"group_id":disabled_id,"actor_id":"web-off","runtime":"web_model","by":"user"}),
+        )
+        .await;
+        daemon(
+            &work_client,
+            "actor_update",
+            json!({"group_id":disabled_id,"actor_id":"web-off",
+            "patch":{"enabled":false},"by":"user"}),
+        )
+        .await;
+        let ambiguous = daemon(
+            &work_client,
+            "group_create_with_scope",
+            json!({"path":project,"title":"ambiguous web","by":"user","set_active":false}),
+        )
+        .await;
+        let ambiguous_id = ambiguous["group_id"]
+            .as_str()
+            .expect("ambiguous")
+            .to_owned();
+        daemon(
+            &work_client,
+            "actor_add",
+            json!({"group_id":ambiguous_id,"actor_id":"local-lead","runtime":"custom",
+            "command":["cat"],"by":"user"}),
+        )
+        .await;
+        daemon(
+            &work_client,
+            "actor_add",
+            json!({"group_id":ambiguous_id,"actor_id":"web-a","runtime":"web_model","by":"user"}),
+        )
+        .await;
+        // Group data can carry more than one Web Model member even though actor_add
+        // refuses to create that state; onboarding must not resolve it by member order.
+        GroupStore::new(work_home.clone())
+            .expect("store")
+            .mutate(&ambiguous_id, |group| {
+                let mut actor = cccc_contracts::Actor::new("web-b");
+                actor.runtime = cccc_contracts::ActorRuntime::WebModel;
+                cccc_core::actors::add(group, actor)
+            })
+            .expect("second web member");
+        let web_only = daemon(
+            &work_client,
+            "group_create_with_scope",
+            json!({"path":project,"title":"web only","by":"user","set_active":false}),
+        )
+        .await;
+        let web_only_id = web_only["group_id"].as_str().expect("web-only").to_owned();
+        daemon(
+            &work_client,
+            "actor_add",
+            json!({"group_id":web_only_id,"actor_id":"web-solo","runtime":"web_model","by":"user"}),
+        )
+        .await;
+        let mut gateway = Gateway::start(&work_home);
+        let chat = Some("shape-chat");
+        let local_only_bind = gateway
+            .call(request(
+                "cccc_group_bind",
+                json!({"group":local_only_id,"chat_url":"https://chatgpt.com/c/local-only"}),
+                chat,
+            ))
+            .await;
+        assert_eq!(
+            error(&local_only_bind),
+            "foreman_conflict",
+            "{local_only_bind}"
+        );
+        assert_eq!(
+            error(
+                &gateway
+                    .call(request("cccc_bootstrap", json!({}), chat))
+                    .await
+            ),
+            "session_binding_required",
+            "a rejected bind must not leave the session bound"
+        );
+        let disabled_bind = gateway
+            .call(request(
+                "cccc_group_bind",
+                json!({"group":disabled_id,"chat_url":"https://chatgpt.com/c/disabled"}),
+                chat,
+            ))
+            .await;
+        assert_eq!(error(&disabled_bind), "foreman_conflict", "{disabled_bind}");
+        let ambiguous_bind = gateway
+            .call(request(
+                "cccc_group_bind",
+                json!({"group":ambiguous_id,"chat_url":"https://chatgpt.com/c/ambiguous"}),
+                chat,
+            ))
+            .await;
+        assert_eq!(
+            error(&ambiguous_bind),
+            "ambiguous_web_member",
+            "{ambiguous_bind}"
+        );
+        let connectors = web_model_connectors::load(&work_home).expect("connectors");
+        assert!(
+            connectors
+                .iter()
+                .all(|entry| { entry["group_id"] != ambiguous_id || entry["revoked"] == true }),
+            "an ambiguous group must not gain an owned connector: {connectors:?}"
+        );
+        let web_only_bind = gateway
+            .call(request(
+                "cccc_group_bind",
+                json!({"group":web_only_id,"chat_url":"https://chatgpt.com/c/web-solo"}),
+                chat,
+            ))
+            .await;
+        assert_eq!(
+            payload(&web_only_bind)["role"],
+            "foreman",
+            "{web_only_bind}"
+        );
+        assert_eq!(
+            payload(&web_only_bind)["actor_id"],
+            "web-solo",
+            "{web_only_bind}"
+        );
+        assert_eq!(
+            payload(&web_only_bind)["status"],
+            "configured",
+            "{web_only_bind}"
+        );
+        let group = GroupStore::new(work_home.clone())
+            .expect("store")
+            .load(&web_only_id)
+            .expect("group");
+        assert_eq!(group.actors.len(), 1, "{group:?}");
+        let boot = gateway
+            .call(request("cccc_bootstrap", json!({}), chat))
+            .await;
+        assert_eq!(payload(&boot)["session"]["actor_id"], "web-solo", "{boot}");
+        assert_eq!(payload(&boot)["session"]["role"], "foreman", "{boot}");
+        gateway.stop().await;
+    })
+    .await;
+    let _ = client
+        .call(&DaemonRequest {
+            v: 1,
+            op: "shutdown".into(),
+            args: Map::new(),
+        })
+        .await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+    result.expect("first-bind shape assertions");
+}

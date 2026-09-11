@@ -243,7 +243,9 @@ fn connect(
         ));
     }
     // A bound Chat operates its actual member, including peers under a local leader.
-    // Only an unbound onboarding request uses the default Foreman flow.
+    // An unbound Chat binds the group's single enabled Web Model member; without one
+    // it keeps the default Foreman flow: create a web Foreman, or report the conflict
+    // with the group's existing local Foreman.
     let member = if let Some(binding) = bound {
         let id = binding["actor_id"].as_str().unwrap_or_default();
         Some(actors::find(group, id).ok_or_else(|| {
@@ -253,7 +255,19 @@ fn connect(
             )
         })?)
     } else {
-        actors::visible(group).next()
+        let candidates: Vec<_> = actors::visible(group)
+            .filter(|actor| actor.enabled && actor.runtime == ActorRuntime::WebModel)
+            .collect();
+        match candidates.as_slice() {
+            [web] => Some(*web),
+            [] => actors::visible(group).next(),
+            _ => {
+                return Err(OpError::new(
+                    "ambiguous_web_member",
+                    "This group has multiple Web Model members; keep exactly one before connecting",
+                ));
+            }
+        }
     };
     if member.is_some_and(|actor| actor.runtime != ActorRuntime::WebModel) {
         return Err(OpError::new(
