@@ -39,7 +39,7 @@ pub(crate) fn spawn(state: AppState) {
     });
 }
 
-async fn ensure_running_actor(
+pub(super) async fn ensure_running_actor(
     state: &AppState,
     preferred_group: Option<&str>,
     event_trigger: bool,
