@@ -1899,16 +1899,21 @@ mod retry_integration_tests {
                 .command(surface_key(), &json!({"t":"click","x":390,"y":28}))
                 .await
                 .expect("resolve isolated fixture draft");
-            let delivered = deliver_pending(&state, gid, "web")
-                .await
-                .expect("resumed attempt");
-            assert!(
-                matches!(delivered, DeliveryOutcome::Submitted),
-                "busy turn did not resume: target={} surface={} count={}",
-                load_target(&state, gid, "web").expect("debug target"),
-                browser.info(surface_key()).await,
-                count.load(Ordering::SeqCst)
-            );
+            super::super::web_model_supervisor::ensure_running_actor(&state, Some(gid), false)
+                .await;
+            let resumed = timeout(Duration::from_secs(12), async {
+                while count.load(Ordering::SeqCst) != 1 {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await;
+            if resumed.is_err() {
+                panic!(
+                    "periodic supervision did not resume the deferred report: target={} surface={}",
+                    load_target(&state, gid, "web").expect("debug target"),
+                    browser.info(surface_key()).await
+                );
+            }
             assert!(matches!(
                 deliver_pending(&state, gid, "web")
                     .await
