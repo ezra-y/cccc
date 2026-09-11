@@ -318,6 +318,13 @@ async fn deliver_once(
     actor_id: &str,
     session_key: &str,
 ) -> Result<DeliveryOutcome, ApiError> {
+    if super::web_model_browser::automation_hold(&state.home).is_some() {
+        state
+            .browser_surfaces
+            .cancel_relay_probe(session_key, &key(group_id, actor_id))
+            .await;
+        return Ok(DeliveryOutcome::Stopped);
+    }
     if !super::web_model_supervisor::actor_delivery_enabled(state, group_id, actor_id) {
         state
             .browser_surfaces
@@ -422,7 +429,7 @@ async fn deliver_once(
         if blocked.as_ref().is_some_and(retryable_pre_send_deferral) {
             state
                 .browser_surfaces
-                .reconcile_relay_page(session_key, &key(group_id, actor_id))
+                .reconcile_relay_page(session_key, &key(group_id, actor_id), target_url)
                 .await
                 .map_err(|e| {
                     ApiError::unavailable("web_model_page_recheck_failed", e.to_string())
@@ -436,6 +443,7 @@ async fn deliver_once(
                 })?;
         }
         if let Some(browser) = blocked {
+            super::web_model_browser::hold_on_restriction(state, &browser)?;
             let needs_action = requires_browser_action(&browser);
             if browser["submission_evidence"]
                 != target["last_submission_evidence"]["submission_evidence"]
@@ -727,6 +735,7 @@ async fn deliver_once(
     let browser = match submitted {
         Ok(PromptSubmissionOutcome::Verified(browser)) => browser,
         Ok(PromptSubmissionOutcome::Deferred(browser)) => {
+            super::web_model_browser::hold_on_restriction(state, &browser)?;
             let needs_action = requires_browser_action(&browser);
             let busy = retryable_pre_send_deferral(&browser);
             let message = "browser model is not ready for a safe prompt submission";

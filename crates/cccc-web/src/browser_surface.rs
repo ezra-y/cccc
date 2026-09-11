@@ -73,7 +73,7 @@ pub(super) struct Session {
     recover_closed_page: bool,
     relay_probe: Option<relay_recovery::RelayProbe>,
     relay_probe_after: Option<std::time::Instant>,
-    relay_probe_retry_delay: std::time::Duration,
+    relay_probe_attempted: Option<(String, String)>,
 }
 
 #[derive(Clone, Copy)]
@@ -480,7 +480,7 @@ impl BrowserSurfaces {
             recover_closed_page: matches!(mode, BrowserMode::Headless),
             relay_probe: None,
             relay_probe_after: None,
-            relay_probe_retry_delay: std::time::Duration::from_secs(60),
+            relay_probe_attempted: None,
         };
         let state = state(&session);
         self.sessions.lock().await.insert(key.into(), session);

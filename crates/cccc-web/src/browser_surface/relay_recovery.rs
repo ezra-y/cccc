@@ -9,6 +9,59 @@ use std::time::{Duration, Instant};
 const RECHECK_INTERVAL: Duration = Duration::from_secs(60);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
+// A timer, another group, a new report or a failed request cannot replenish
+// this budget. Only observing a different conversation/turn allows one check.
+fn claim_recovery_attempt(last: &mut Option<(String, String)>, url: &str, turn: &str) -> bool {
+    if last.as_ref().is_some_and(|(u, t)| u == url && t == turn) {
+        return false;
+    }
+    *last = Some((url.to_owned(), turn.to_owned()));
+    true
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::claim_recovery_attempt;
+
+    #[test]
+    fn unchanged_page_cannot_replenish_recovery_budget() {
+        let mut last = None;
+        assert!(claim_recovery_attempt(
+            &mut last,
+            "https://example.invalid/c/a",
+            "turn-a"
+        ));
+        for _ in 0..10_000 {
+            assert!(!claim_recovery_attempt(
+                &mut last,
+                "https://example.invalid/c/a",
+                "turn-a"
+            ));
+        }
+        assert!(claim_recovery_attempt(
+            &mut last,
+            "https://example.invalid/c/a",
+            "turn-b"
+        ));
+        assert!(!claim_recovery_attempt(
+            &mut last,
+            "https://example.invalid/c/a",
+            "turn-b"
+        ));
+        let mut missing_turn = None;
+        assert!(claim_recovery_attempt(
+            &mut missing_turn,
+            "https://example.invalid/c/b",
+            ""
+        ));
+        assert!(!claim_recovery_attempt(
+            &mut missing_turn,
+            "https://example.invalid/c/b",
+            ""
+        ));
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct RelayProbe {
     page: Page,
@@ -37,9 +90,20 @@ impl BrowserSurfaces {
     }
 
     /// Driven by the existing delivery poll under the shared browser lock.
-    pub(crate) async fn reconcile_relay_page(&self, key: &str, owner: &str) -> Result<()> {
+    pub(crate) async fn reconcile_relay_page(
+        &self,
+        key: &str,
+        owner: &str,
+        target_url: &str,
+    ) -> Result<()> {
         let original = self.page(key).await?;
         let observed = inspect_submission(&original, "", &[]).await?;
+        // Waiting for a shared page does not authorize inspecting its owner's
+        // conversation. Only the explicitly bound target can be reloaded.
+        if observed.url.trim_end_matches('/') != target_url.trim_end_matches('/') {
+            self.cancel_relay_probe(key, owner).await;
+            return Ok(());
+        }
         // Never refresh an explicit archive, login, verification or refusal page.
         // Recovery uses observations, not retries against an account-level block.
         if !observed.page_blocker.is_empty() || sign_in_required(&original).await? {
@@ -52,7 +116,7 @@ impl BrowserSurfaces {
             self.cancel_relay_probe(key, owner).await;
             if let Some(s) = self.sessions.lock().await.get_mut(key) {
                 s.relay_probe_after = None;
-                s.relay_probe_retry_delay = RECHECK_INTERVAL;
+
                 if s.metadata["relay_recovery"]["state"] == "blocked" {
                     s.metadata["relay_recovery"] = json!({"state":"ready"});
                 }
@@ -81,11 +145,16 @@ impl BrowserSurfaces {
                 if session.relay_probe_after.is_some_and(|after| now < after) {
                     return Ok(());
                 }
+                if !claim_recovery_attempt(
+                    &mut session.relay_probe_attempted,
+                    &observed.url,
+                    &observed.latest_turn_id,
+                ) {
+                    return Ok(());
+                }
                 // ponytail: one temporary tab in the existing browser/profile;
                 // no second browser, copied login, provider API, or polling service.
-                session.relay_probe_after = Some(now + session.relay_probe_retry_delay);
-                session.relay_probe_retry_delay =
-                    (session.relay_probe_retry_delay * 2).min(Duration::from_secs(15 * 60));
+                session.relay_probe_after = Some(now + RECHECK_INTERVAL);
                 let mut target = CreateTargetParams::new(&observed.url);
                 target.background = Some(true);
                 let page = session.browser.new_page(target).await?;
@@ -147,7 +216,7 @@ impl BrowserSurfaces {
             result?;
             if let Some(session) = self.sessions.lock().await.get_mut(key) {
                 session.relay_probe_after = None;
-                session.relay_probe_retry_delay = RECHECK_INTERVAL;
+
                 session.metadata["relay_recovery"] = json!({
                     "state":"refreshed", "reason":"fresh_completed_turn", "url":probe.url,
                     "completed_turn":completed.ok().flatten(), "at":cccc_contracts::utc_now()
