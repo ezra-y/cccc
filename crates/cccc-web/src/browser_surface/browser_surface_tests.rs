@@ -1305,3 +1305,225 @@ document.body.append(m);i.value=''}</script></body>"#,
     }
     server.abort();
 }
+
+#[tokio::test]
+async fn sidebar_titles_and_history_controls_are_not_generation_stop_controls() {
+    require_chrome!();
+    let (url, server) = local_page(r#"<!doctype html><body>
+<nav><button aria-label="置顶 查看工作目录停止 状态">Pin</button>
+<button data-testid="history-item-0-options" aria-label="打开“查看工作目录停止”的对话选项">Options</button>
+<button aria-label="Stop" title="Pinned chat">Stop</button></nav>
+<main><article><button>Stop</button></article>
+<form><textarea id="prompt-textarea" placeholder="Message"></textarea>
+<button type="button" aria-label="Send prompt">Send</button>
+<button id="busy" data-testid="stop-button" type="button" aria-label="Stop streaming">Stop</button>
+</form></main></body>"#).await;
+    let temp = tempfile::tempdir().expect("isolated profile");
+    let manager = BrowserSurfaces::default();
+    manager
+        .open("sidebar-stop", &temp.path().join("profile"), &url, 800, 600)
+        .await
+        .expect("browser");
+    let busy = manager
+        .relay_surface_deferral("sidebar-stop")
+        .await
+        .expect("real stop");
+    let page = manager
+        .sessions
+        .lock()
+        .await
+        .get("sidebar-stop")
+        .expect("session")
+        .page
+        .clone();
+    page.evaluate("document.querySelector('#busy').remove()")
+        .await
+        .expect("finish answer");
+    let idle = manager
+        .relay_surface_idle("sidebar-stop")
+        .await
+        .expect("idle inspection");
+    let deferred = manager
+        .relay_surface_deferral("sidebar-stop")
+        .await
+        .expect("deferral inspection");
+    page.evaluate(r#"window.sent=0;document.querySelector('form button').onclick=()=>{window.sent++;const n=document.createElement('div');n.dataset.messageAuthorRole='user';n.textContent=document.querySelector('textarea').value;document.body.append(n);document.querySelector('textarea').value=''}"#)
+        .await.expect("fixture send handler");
+    let sent = manager
+        .submit_prompt_with_attachment(
+            "sidebar-stop",
+            &url,
+            "SIDEBAR_STOP_ORIGINAL_REPORT",
+            None,
+            "sidebar-report",
+        )
+        .await
+        .expect("submit through native gates");
+    let again = manager
+        .submit_prompt_with_attachment(
+            "sidebar-stop",
+            &url,
+            "SIDEBAR_STOP_ORIGINAL_REPORT",
+            None,
+            "sidebar-report",
+        )
+        .await
+        .expect("duplicate check");
+    let count = page
+        .evaluate("window.sent")
+        .await
+        .expect("send count")
+        .into_value::<u64>()
+        .expect("numeric count");
+    manager.close("sidebar-stop").await.expect("browser closed");
+    server.abort();
+    assert!(
+        matches!(sent, PromptSubmissionOutcome::Verified(_)),
+        "sidebars blocked Send readiness"
+    );
+    assert!(matches!(again, PromptSubmissionOutcome::Verified(_)));
+    assert_eq!(count, 1, "report must be sent exactly once");
+    assert_eq!(
+        busy.expect("real generation blocks delivery")["submission_evidence"],
+        "not_sent_chat_busy"
+    );
+    assert!(
+        idle,
+        "sidebar title or historical Stop button falsely marked the chat as generating"
+    );
+    assert!(
+        deferred.is_none(),
+        "unrelated controls blocked delivery: {deferred:?}"
+    );
+}
+
+#[tokio::test]
+async fn archived_page_does_not_block_other_targets_or_trigger_reloads() {
+    require_chrome!();
+    let (archived_url, archived_server) = local_page(r#"<!doctype html><body><nav><button>查看工作目录停止</button></nav><main><p>This conversation is archived.</p><button onclick="window.unarchived=true">Unarchive</button></main></body>"#).await;
+    let (ready_url, ready_server) = local_page(r#"<!doctype html><body><form><textarea id="prompt-textarea"></textarea><button type="button" aria-label="Send prompt" onclick="window.sent=(window.sent||0)+1;const n=document.createElement('div');n.dataset.messageAuthorRole='user';n.textContent=document.querySelector('textarea').value;document.body.append(n);document.querySelector('textarea').value=''">Send</button></form></body>"#).await;
+    let temp = tempfile::tempdir().expect("profile");
+    let manager = BrowserSurfaces::default();
+    manager
+        .open(
+            "archived",
+            &temp.path().join("profile"),
+            &archived_url,
+            800,
+            600,
+        )
+        .await
+        .expect("browser");
+    let result = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
+        let page = manager.page("archived").await.expect("page");
+        let blocked = manager
+            .relay_target_deferral("archived", &archived_url)
+            .await
+            .expect("same target")
+            .expect("archive blocker");
+        assert_eq!(
+            blocked["submission_evidence"],
+            "not_sent_conversation_archived"
+        );
+        for _ in 0..5 {
+            manager
+                .reconcile_relay_page("archived", "a")
+                .await
+                .expect("read only archive check");
+        }
+        assert!(
+            manager
+                .sessions
+                .lock()
+                .await
+                .get("archived")
+                .expect("session")
+                .relay_probe
+                .is_none()
+        );
+        assert!(
+            manager
+                .relay_target_deferral("archived", &ready_url)
+                .await
+                .expect("other target")
+                .is_none()
+        );
+        let own = manager
+            .submit_prompt_with_attachment("archived", &archived_url, "ARCHIVED_REPORT", None, "a")
+            .await
+            .expect("archived submission");
+        assert!(matches!(own, PromptSubmissionOutcome::Deferred(_)));
+        assert!(
+            !page
+                .evaluate("Boolean(window.unarchived)")
+                .await
+                .expect("untouched archive")
+                .into_value::<bool>()
+                .expect("bool")
+        );
+        let other = manager
+            .submit_prompt_with_attachment("archived", &ready_url, "OTHER_GROUP_REPORT", None, "b")
+            .await
+            .expect("other group submission");
+        assert!(
+            matches!(other, PromptSubmissionOutcome::Verified(_)),
+            "archived A blocked B"
+        );
+        assert_eq!(
+            page.evaluate("window.sent")
+                .await
+                .expect("count")
+                .into_value::<u64>()
+                .expect("number"),
+            1
+        );
+    }))
+    .await;
+    manager.close("archived").await.expect("close");
+    archived_server.abort();
+    ready_server.abort();
+    result.expect("archive isolation assertions")
+}
+
+#[tokio::test]
+async fn refused_pages_and_fresh_probes_do_not_create_request_loops() {
+    require_chrome!();
+    let (url, server) = local_page(r#"<!doctype html><body><main><section data-testid="conversation-turn-1" data-turn-id="turn"><div data-message-author-role="assistant">old answer</div></section><form><textarea id="prompt-textarea"></textarea><button id="busy" aria-label="Stop streaming">Stop</button></form></main></body>"#).await;
+    let temp = tempfile::tempdir().expect("profile");
+    let manager = BrowserSurfaces::default();
+    manager
+        .open("refused", &temp.path().join("profile"), &url, 800, 600)
+        .await
+        .expect("browser");
+    let result = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
+        let original = manager.page("refused").await.expect("original");
+        manager.reconcile_relay_page("refused", "owner").await.expect("first probe");
+        let fresh = manager.sessions.lock().await.get("refused").expect("session").browser
+            .pages().await.expect("pages").into_iter().find(|page| page.target_id() != original.target_id()).expect("probe created");
+        fresh.evaluate("document.body.innerHTML='<div role=alert>Too many requests</div>'").await.expect("rate limit fixture");
+        manager.reconcile_relay_page("refused", "owner").await.expect("stop after refusal");
+        for _ in 0..5 {
+            manager.sessions.lock().await.get_mut("refused").expect("session").relay_probe_after = None;
+            manager.reconcile_relay_page("refused", "owner").await.expect("no repeated network recovery");
+            assert!(manager.sessions.lock().await.get("refused").expect("session").relay_probe.is_none());
+        }
+        assert_eq!(manager.relay_surface_deferral("refused").await.expect("deferral").expect("cached refusal")["submission_evidence"], "not_sent_rate_limited");
+        original.evaluate("document.querySelector('#busy').remove()") .await.expect("source became ready");
+        manager.reconcile_relay_page("refused", "owner").await.expect("source recovery");
+        assert!(manager.relay_surface_deferral("refused").await.expect("ready source").is_none());
+        for (notice, code) in [("Access denied", "access_denied"), ("Verify you are human", "verification_required"), ("操作过于频繁", "rate_limited")] {
+            original.evaluate(format!("document.body.innerHTML='<main><div role=alert>{notice}</div></main>'")).await.expect("restriction fixture");
+            for _ in 0..3 { manager.reconcile_relay_page("refused", "owner").await.expect("quiet blocked check"); }
+            assert!(manager.sessions.lock().await.get("refused").expect("session").relay_probe.is_none());
+            let attempt = manager.submit_prompt_with_attachment("refused", "http://127.0.0.1:1/other", "DO_NOT_SEND", None, "blocked").await.expect("must defer without navigation");
+            let PromptSubmissionOutcome::Deferred(evidence) = attempt else { panic!("refusal was not preserved") };
+            assert_eq!(evidence["submission_evidence"], format!("not_sent_{code}"));
+            assert_eq!(original.url().await.expect("URL").expect("page URL").trim_end_matches('/'), url.trim_end_matches('/'));
+        }
+        original.evaluate(r#"document.body.innerHTML='<main><article><div data-message-author-role="assistant"><div role="alert">Too many requests</div></div></article><form><textarea id="prompt-textarea"></textarea></form></main>'"#).await.expect("quoted restriction");
+        assert!(manager.relay_surface_deferral("refused").await.expect("quoted text ignored").is_none());
+    })).await;
+    manager.close("refused").await.expect("close");
+    server.abort();
+    result.expect("restriction assertions");
+}

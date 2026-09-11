@@ -64,6 +64,7 @@ pub(super) struct SubmissionSnapshot {
     composer_contains_prompt: bool,
     pub(super) composer_chars: usize,
     pub(super) latest_turn_id: String,
+    pub(super) page_blocker: String,
     user_message_count: usize,
     send_enabled_count: usize,
 }
@@ -152,8 +153,24 @@ impl BrowserSurfaces {
         }
         let page = self.page(key).await?;
         let current_url = page.url().await?.unwrap_or_default();
+        let current = inspect_submission(&page, prompt, &submission_needles(prompt)).await?;
+        // Account-level refusal blocks navigation; an archived chat only blocks
+        // itself. Do not cancel its archive or touch its messages.
+        if !current.page_blocker.is_empty()
+            && (current.page_blocker != "conversation_archived"
+                || target_url.is_empty()
+                || same_page(&current_url, target_url))
+        {
+            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:page_blocked",
+                &format!("not_sent_{}", current.page_blocker),
+                "",
+                &current,
+                &current,
+            )));
+        }
         if !target_url.is_empty() && !same_page(&current_url, target_url) {
-            let current = inspect_submission(&page, prompt, &submission_needles(prompt)).await?;
             if current.composer_chars > 0 {
                 return Ok(PromptSubmissionOutcome::Deferred(evidence(
                     false,
@@ -221,6 +238,16 @@ impl BrowserSurfaces {
             )));
         }
 
+        if !existing.page_blocker.is_empty() {
+            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:page_blocked",
+                &format!("not_sent_{}", existing.page_blocker),
+                "",
+                &existing,
+                &existing,
+            )));
+        }
         if existing.running || existing.stop_visible {
             self.record_page_state(key, &page).await;
             return Ok(PromptSubmissionOutcome::Deferred(evidence(
@@ -723,17 +750,37 @@ impl BrowserSurfaces {
         let snapshot = inspect_submission(&page, "__cccc_relay_idle_probe__", &[]).await?;
         Ok(!snapshot.running
             && !snapshot.stop_visible
+            && snapshot.page_blocker.is_empty()
             && snapshot.composer_chars == 0
             && super::relay_recovery::composer_present(&page).await?)
     }
 
     pub(crate) async fn relay_surface_deferral(&self, key: &str) -> Result<Option<Value>> {
         let page = self.page(key).await?;
-        if sign_in_required(&page).await? {
-            return Ok(None);
+        let mut snapshot = inspect_submission(&page, "__cccc_relay_busy_probe__", &[]).await?;
+        // A fresh check can encounter a refusal while the original remains stale.
+        // Share that observation until the original page or its turn changes.
+        if snapshot.page_blocker.is_empty()
+            && snapshot.composer_chars == 0
+            && (snapshot.running
+                || snapshot.stop_visible
+                || !super::relay_recovery::composer_present(&page).await?)
+            && let Some(session) = self.sessions.lock().await.get(key)
+        {
+            let cached = &session.metadata["relay_recovery"];
+            if cached["state"] == "blocked"
+                && cached["url"] == snapshot.url
+                && cached["source_turn"] == snapshot.latest_turn_id
+            {
+                snapshot.page_blocker = cached["reason"].as_str().unwrap_or("").to_owned();
+            }
         }
-        let snapshot = inspect_submission(&page, "__cccc_relay_busy_probe__", &[]).await?;
-        let reason = if snapshot.running || snapshot.stop_visible {
+        let blocker = format!("not_sent_{}", snapshot.page_blocker);
+        let reason = if !snapshot.page_blocker.is_empty() {
+            blocker.as_str()
+        } else if sign_in_required(&page).await? {
+            "not_sent_login_required"
+        } else if snapshot.running || snapshot.stop_visible {
             "not_sent_chat_busy"
         } else if snapshot.composer_chars > 0 {
             "not_sent_composer_occupied"
@@ -748,6 +795,20 @@ impl BrowserSurfaces {
         Ok(Some(evidence))
     }
 
+    pub(crate) async fn relay_target_deferral(
+        &self,
+        key: &str,
+        target_url: &str,
+    ) -> Result<Option<Value>> {
+        Ok(self.relay_surface_deferral(key).await?.filter(|blocked| {
+            !matches!(
+                blocked["submission_evidence"].as_str(),
+                Some("not_sent_composer_unavailable" | "not_sent_conversation_archived")
+            ) || target_url.is_empty()
+                || same_page(blocked["url"].as_str().unwrap_or(""), target_url)
+        }))
+    }
+
     pub(crate) async fn prompt_readiness(&self, key: &str) -> Result<Value> {
         let page = self.page(key).await?;
         let url = page.url().await?.unwrap_or_default();
@@ -758,14 +819,18 @@ impl BrowserSurfaces {
             .into_value::<ComposerCandidate>()
             .context("decode visible browser composer")?;
         let login_required = sign_in_required(&page).await?;
-        let ready = !candidate.selector.is_empty() && !login_required;
+        let page_blocker = inspect_submission(&page, "", &[]).await?.page_blocker;
+        let ready = !candidate.selector.is_empty() && !login_required && page_blocker.is_empty();
         let readiness = json!({
             "ready":ready,
             "login_required":login_required,
             "tab_url":url,
             "input_selector":candidate.descriptor,
+            "page_blocker":page_blocker,
             "checked_at":cccc_contracts::utc_now(),
-            "message":if login_required {
+            "message":if !page_blocker.is_empty() {
+                "The conversation is archived or browser access is restricted. The report is retained; automatic page recovery is stopped."
+            } else if login_required {
                 "Sign in to ChatGPT in this browser before expecting tool access or saved-conversation delivery."
             } else if ready {
                 "Browser model composer is ready; account tool access still requires a real call."
@@ -1025,7 +1090,9 @@ async fn wait_for_send_control(page: &Page) -> Result<SendReadiness> {
     let mut stop_only_since = None;
     loop {
         let probe = page
-            .evaluate(format!("({SELECT_SEND_CONTROL_SCRIPT})()"))
+            .evaluate(format!(
+                "({SELECT_SEND_CONTROL_SCRIPT})({GENERATION_STOP_CONTROL_SCRIPT})"
+            ))
             .await
             .context("inspect browser composer send control")?
             .into_value::<SendProbe>()
@@ -1070,7 +1137,7 @@ async fn request_submit(page: &Page, target_url: &str) -> Result<RequestSubmitRe
     };
     let expected = serde_json::to_string(expected)?;
     page.evaluate(format!(
-        "({REQUEST_SUBMIT_SCRIPT})({{...({SELECT_SEND_CONTROL_SCRIPT})(), expected_url:{expected}}})"
+        "({REQUEST_SUBMIT_SCRIPT})({{...({SELECT_SEND_CONTROL_SCRIPT})({GENERATION_STOP_CONTROL_SCRIPT}), expected_url:{expected}}}, {GENERATION_STOP_CONTROL_SCRIPT})"
     ))
     .await
     .context("request browser composer submission")?
@@ -1084,11 +1151,13 @@ pub(super) async fn inspect_submission(
     needles: &[String],
 ) -> Result<SubmissionSnapshot> {
     let payload = serde_json::to_string(&json!({"prompt":prompt,"needles":needles}))?;
-    page.evaluate(format!("({INSPECT_SUBMISSION_SCRIPT})({payload})"))
-        .await
-        .context("inspect browser prompt submission")?
-        .into_value::<SubmissionSnapshot>()
-        .context("decode browser prompt submission state")
+    page.evaluate(format!(
+        "({INSPECT_SUBMISSION_SCRIPT})({payload}, {GENERATION_STOP_CONTROL_SCRIPT})"
+    ))
+    .await
+    .context("inspect browser prompt submission")?
+    .into_value::<SubmissionSnapshot>()
+    .context("decode browser prompt submission state")
 }
 
 fn weak_submission_evidence(
@@ -1371,7 +1440,17 @@ const FOCUS_AND_SELECT_SCRIPT: &str = r#"() => {
     return document.activeElement === input;
 }"#;
 
-const SELECT_SEND_CONTROL_SCRIPT: &str = r#"() => {
+// Share the actual control predicate across readiness, Send and final form submission.
+const GENERATION_STOP_CONTROL_SCRIPT: &str = r#"node => {
+    if (node.closest('nav, aside, [role="navigation"], [data-message-author-role], [data-testid^="conversation-turn"], main article')
+        || node.hasAttribute('data-conversation-options-trigger')) return false;
+    if (node.getAttribute('data-testid') === 'stop-button') return true;
+    const action = String(node.getAttribute('aria-label') || node.getAttribute('title')
+        || node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    return /^(?:stop(?: streaming| generating| generation)?|停止(?:生成|回答|响应|回复|流式传输)?|中止|生成を停止|応答を停止|cancel generation|interrupt)$/.test(action);
+}"#;
+
+const SELECT_SEND_CONTROL_SCRIPT: &str = r#"isGenerationStop => {
     const input = document.querySelector('[data-cccc-web-model-composer="cccc-web-model-composer"]');
     const markerName = 'data-cccc-web-model-send';
     const markerValue = 'cccc-web-model-send';
@@ -1388,7 +1467,7 @@ const SELECT_SEND_CONTROL_SCRIPT: &str = r#"() => {
     const label = node => [node.getAttribute('aria-label') || '', node.getAttribute('title') || '',
         node.getAttribute('data-testid') || '', node.id || '', node.className || '',
         node.innerText || node.textContent || ''].join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
-    const stop = node => /\bstop\b|停止|中止|cancel generation|interrupt/.test(label(node));
+    const stop = isGenerationStop;
     const unsafe = node => stop(node)
         || /retry|signin|sign in|log in|login|voice|dictat|microphone|attach|upload|google|microsoft|apple/.test(label(node));
     const sendLike = node => {
@@ -1438,7 +1517,7 @@ const SELECT_SEND_CONTROL_SCRIPT: &str = r#"() => {
     };
 }"#;
 
-const REQUEST_SUBMIT_SCRIPT: &str = r#"probe => {
+const REQUEST_SUBMIT_SCRIPT: &str = r#"(probe, isGenerationStop) => {
     const route = value => { const u = new URL(value, location.href); u.search=''; u.hash=''; return u.href; };
     if (probe.expected_url && route(probe.expected_url) !== route(location.href)) {
         return {action:'none:target_changed',invoked:false,unsafe_state:true,error:'conversation target changed'};
@@ -1471,7 +1550,7 @@ const REQUEST_SUBMIT_SCRIPT: &str = r#"probe => {
         node.getAttribute('data-testid') || '', node.id || '', node.innerText || node.textContent || '']
         .join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
     const buttons = Array.from(form.querySelectorAll('button, [role="button"]')).filter(visible);
-    if (buttons.some(node => /\bstop\b|停止|中止|cancel generation|interrupt/.test(label(node)))) {
+    if (buttons.some(isGenerationStop)) {
         return { action: '', invoked: false, unsafe_state: true, error: '' };
     }
     const submit = buttons.find(node => !node.disabled
@@ -1485,7 +1564,7 @@ const REQUEST_SUBMIT_SCRIPT: &str = r#"probe => {
     }
 }"#;
 
-const INSPECT_SUBMISSION_SCRIPT: &str = r#"payload => {
+const INSPECT_SUBMISSION_SCRIPT: &str = r#"(payload, isGenerationStop) => {
     const normalize = value => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
     const expected = normalize(payload.prompt);
     const prefix = expected.slice(0, 160);
@@ -1530,7 +1609,16 @@ const INSPECT_SUBMISSION_SCRIPT: &str = r#"payload => {
     const label = node => [node.getAttribute('aria-label') || '', node.getAttribute('title') || '',
         node.getAttribute('data-testid') || '', node.id || '', node.innerText || node.textContent || '']
         .join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
-    const stopVisible = controls.some(node => /\bstop\b|停止|中止|cancel generation|interrupt/.test(label(node)));
+    const stopVisible = controls.some(isGenerationStop);
+    const chromeUI = node => !node.closest('nav, aside, [role="navigation"], [data-message-author-role], [data-testid^="conversation-turn"], main article');
+    const notices = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [role="dialog"], [data-testid*="error"], #challenge-stage'))
+        .filter(node => visible(node) && chromeUI(node)).map(read).join(' ');
+    const archived = !composers.length && controls.some(node => chromeUI(node)
+        && /^(?:unarchive(?: conversation| chat)?|取消归档|取消封存|解除封存|アーカイブ解除)$/i.test(normalize(node.getAttribute('aria-label') || node.innerText || node.textContent)));
+    const blocker = /too many requests|rate limit|操作(?:过于|太)?频繁|请求过多|请求过于频繁/i.test(notices) ? 'rate_limited'
+        : /access denied|request blocked|访问被拒绝|拒绝访问/i.test(notices) ? 'access_denied'
+        : /verify (?:you are|you're) human|verifying you are human|确认您是真人|验证您是人类|验证您是否为人类/i.test(notices) ? 'verification_required'
+        : archived ? 'conversation_archived' : '';
     const safeSend = controls.filter(node => {
         const text = label(node);
         if (/\bstop\b|停止|中止|cancel|retry|signin|sign in|log in|login|voice|microphone|attach|upload/.test(text)) return false;
@@ -1539,7 +1627,7 @@ const INSPECT_SUBMISSION_SCRIPT: &str = r#"payload => {
             || node.getAttribute('type') === 'submit' || /\bsend\b|\bsubmit\b|发送|送信/.test(text);
     });
     return {
-        url: location.href || '', echo_found: echoFound, running: stopVisible, stop_visible: stopVisible,
+        url: location.href || '', echo_found: echoFound, running: stopVisible, stop_visible: stopVisible, page_blocker: blocker,
         composer_exact: Boolean(markedText && markedText === expected),
         composer_contains_prompt: composerTexts.some(containsPrompt),
         // Before selecting an input, existing visible drafts still prevent a target switch.
