@@ -1038,10 +1038,7 @@ export default function WebModelConnectorsTab({
                     >
                       {sharedError ? wm("t05.sharedUnavailable") : browserStatusLabel}
                     </span>
-                    <span
-                      data-t05-review="shared-login"
-                      className="ml-2 inline-block text-xs rounded-sm"
-                    >
+                    <span className="ml-2 inline-block text-xs rounded-sm">
                       {wm("t05.sharedLoginNote")}
                     </span>
                   </div>
@@ -1127,11 +1124,7 @@ export default function WebModelConnectorsTab({
             </SetupSection>
 
             <SetupSection step="group" title={wm("t05.groupStep")}>
-              <div
-                data-t05-change="web-group-selector"
-                data-t05-review="group-selector"
-                className="rounded-lg p-3"
-              >
+              <div data-t05-change="web-group-selector" className="rounded-lg p-3">
                 <div id="t05-web-group">
                   <SelectCombobox
                     items={groups.map((group) => ({
@@ -1178,7 +1171,7 @@ export default function WebModelConnectorsTab({
             {selectedActor ? (
               <>
                 <SetupSection step="connection" title={wm("chatSetup.mcpAppTitle")}>
-                  <div data-t05-review="chat-binding" className="rounded-lg p-3">
+                  <div className="rounded-lg p-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <span data-t05-change="binding-status">
                         {sessionBound ? wm("t05.bound") : wm("t05.unbound")}
@@ -1217,10 +1210,7 @@ export default function WebModelConnectorsTab({
                         </p>
                         {!chatGptSeen ? (
                           <details data-t05-change="legacy-setup" className="mt-3">
-                            <summary
-                              data-t05-review="legacy-fold"
-                              className="cursor-pointer text-sm rounded-md"
-                            >
+                            <summary className="cursor-pointer text-sm rounded-md">
                               {wm("t05.original")}
                             </summary>
 
@@ -1357,7 +1347,6 @@ export default function WebModelConnectorsTab({
                       <button
                         type="button"
                         data-t05-change="save-return-target"
-                        data-t05-review="confirmed-target-save"
                         onClick={() => void saveDeliveryTarget()}
                         disabled={targetSaveDisabled}
                         className={

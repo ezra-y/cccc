@@ -697,7 +697,6 @@ export function WebModelRuntimePanel({
             <button
               type="button"
               data-t05-change="member-preview-toggle"
-              data-t05-review="preview-toggle"
               onClick={() => setPreviewOpen((value) => !value)}
               className={iconButtonClass(false)}
             >
@@ -706,7 +705,6 @@ export function WebModelRuntimePanel({
             <button
               type="button"
               data-t05-change="member-open-browser"
-              data-t05-review="open-browser"
               disabled={!canControlSurface || Boolean(busyAction)}
               onClick={() =>
                 void startBrowserSurfaceSession({ width: 1366, height: 900 })

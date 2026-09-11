@@ -69,7 +69,6 @@ export function GroupMembersMenu({ groupId, actors, readOnly, onOpenActor, onEdi
         <button
           type="button"
           data-t05-change="members-entry"
-          data-t05-review="members-entry"
           className="inline-flex shrink-0 items-center rounded-lg border border-[var(--glass-border-subtle)] px-2 py-1.5 text-xs text-[var(--color-text-primary)]"
         >
           {t("t05Members.entry", { count: members.length })}
@@ -79,7 +78,6 @@ export function GroupMembersMenu({ groupId, actors, readOnly, onOpenActor, onEdi
         align="start"
         className="t05-members-menu w-[min(22rem,calc(100vw-2rem))] p-3"
         data-t05-change="members-menu"
-        data-t05-review="members-menu"
       >
         <div className="mb-2 text-sm font-semibold">{t("t05Members.title")}</div>
         <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">

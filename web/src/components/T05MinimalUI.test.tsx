@@ -259,8 +259,7 @@ describe("minimal overlay on upstream UI", () => {
     expect(mocks.copy).toHaveBeenCalledExactlyOnceWith("https://example.invalid/mcp/test-only");
     expect(mocks.createWebModelConnectorBinding).not.toHaveBeenCalled();
     expect(mocks.bindCurrentWebModelBrowserConversation).not.toHaveBeenCalled();
-    expect(host.querySelector('[data-t05-review="group-selector"]')).not.toBeNull();
-    expect(host.querySelectorAll("[data-t05-review]").length).toBeLessThanOrEqual(5);
+    expect(host.querySelector("#t05-web-group [role=combobox]")).not.toBeNull();
   });
   it("discards a late actor response after switching groups", async () => {
     const delayedActors = deferred<ReturnType<typeof ok<{ actors: Actor[] }>>>();
@@ -340,11 +339,9 @@ describe("group members shortcut", () => {
       />,
     );
     await click('[data-t05-change="members-entry"]');
-    expect(document.querySelector('[data-t05-review="members-entry"]')).not.toBeNull();
-    expect(document.querySelector('[data-t05-review="members-menu"]')).not.toBeNull();
-    expect(
-      document.querySelector('[data-t05-change="member-details"]')?.hasAttribute("data-t05-review"),
-    ).toBe(false);
+    expect(document.querySelector('[data-t05-change="members-entry"]')).not.toBeNull();
+    expect(document.querySelector('[data-t05-change="members-menu"]')).not.toBeNull();
+    expect(document.querySelector('[data-t05-change="member-details"]')).not.toBeNull();
     expect(
       document
         .querySelector('[data-t05-change="members-menu"]')

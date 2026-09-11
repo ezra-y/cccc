@@ -1284,9 +1284,7 @@
         "bindTarget": "既存の ChatGPT 会話を保存するか、対象 URL を貼り付けるか、次回配信で新しい会話を選びます。",
         "ready": "ブラウザ配信の準備ができています。"
       },
-      "queue": {
-        "queued": "{{count}} 件キュー済み"
-      },
+      "queue": { "queued": "{{count}} 件キュー済み" },
       "warnings": {
         "rotateOldConnector": "この古い connector を一度ローテーションして、コピー可能な ChatGPT MCP URL を生成してください。",
         "localMcpUrl": "MCP URL はローカル専用です。Web ホスト型モデルには公開 HTTPS URL が必要です。",
@@ -1353,9 +1351,7 @@
         "seen": "確認済み",
         "seenAt": "{{time}} に確認"
       },
-      "copyLabels": {
-        "mcpUrl": "MCP URL"
-      },
+      "copyLabels": { "mcpUrl": "MCP URL" },
       "notices": {
         "connectorRotated": "Connector をローテーションしました。以前の connector は取り消されました。",
         "connectorCreated": "Connector を作成しました。",
@@ -1393,10 +1389,7 @@
         "inspect_error": "エラーを確認",
         "login_chatgpt": "ChatGPT にサインイン"
       },
-      "common": {
-        "none": "なし",
-        "notSet": "未設定"
-      },
+      "common": { "none": "なし", "notSet": "未設定" },
       "t05": {
         "selectGroup": "グループを選択",
         "groupScope": "グループを選び、Web メンバーの会話と返信先を設定します。グループを切り替えてもアカウントは変わりません。",

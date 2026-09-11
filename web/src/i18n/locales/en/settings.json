@@ -1284,9 +1284,7 @@
         "bindTarget": "Save an existing ChatGPT conversation, paste a target URL, or choose new-chat delivery.",
         "ready": "Ready for browser delivery."
       },
-      "queue": {
-        "queued": "{{count}} queued"
-      },
+      "queue": { "queued": "{{count}} queued" },
       "warnings": {
         "rotateOldConnector": "Rotate this older connector once to generate a copyable ChatGPT MCP URL.",
         "localMcpUrl": "MCP URL is local-only. Browser-hosted models need a public HTTPS URL.",
@@ -1353,9 +1351,7 @@
         "seen": "seen",
         "seenAt": "seen {{time}}"
       },
-      "copyLabels": {
-        "mcpUrl": "MCP URL"
-      },
+      "copyLabels": { "mcpUrl": "MCP URL" },
       "notices": {
         "connectorRotated": "Connector rotated. Previous connector revoked.",
         "connectorCreated": "Connector created.",
@@ -1393,10 +1389,7 @@
         "inspect_error": "Inspect error",
         "login_chatgpt": "Sign in to ChatGPT"
       },
-      "common": {
-        "none": "none",
-        "notSet": "Not set"
-      },
+      "common": { "none": "none", "notSet": "Not set" },
       "t05": {
         "selectGroup": "Choose group",
         "groupScope": "Choose a group to configure its web member’s conversation and return URL. Changing groups does not change the account.",
