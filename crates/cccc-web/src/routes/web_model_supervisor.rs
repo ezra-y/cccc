@@ -65,7 +65,7 @@ async fn ensure_actor(state: &AppState, group_id: String, actor_id: String, even
         .await;
     if surface["active"].as_bool().unwrap_or(false) {
         ensure_relay_decision_reminder(state, &group_id, &actor_id).await;
-        if event_trigger {
+        if should_start_delivery_worker(event_trigger, &target) {
             super::web_model_delivery::ensure_worker(
                 state.clone(),
                 group_id.clone(),
@@ -232,6 +232,21 @@ fn group_state_allows_delivery(running: bool, state: GroupState) -> bool {
     running && !matches!(state, GroupState::Paused | GroupState::Stopped)
 }
 
+fn should_start_delivery_worker(event_trigger: bool, target: &serde_json::Value) -> bool {
+    event_trigger
+        || (target["last_delivery_status"] == "deferred"
+            && matches!(
+                target
+                    .pointer("/last_submission_evidence/submission_evidence")
+                    .and_then(serde_json::Value::as_str),
+                Some(
+                    "not_sent_chat_busy"
+                        | "not_sent_composer_occupied"
+                        | "not_sent_composer_unavailable"
+                )
+            ))
+}
+
 fn normalize(value: impl AsRef<str>) -> String {
     value.as_ref().trim().to_ascii_lowercase()
 }
@@ -260,4 +275,42 @@ fn clear_warmup_attempt(key: &str) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .remove(key);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_start_delivery_worker;
+    use serde_json::json;
+
+    #[test]
+    fn periodic_tick_rearms_a_safely_deferred_browser_delivery() {
+        for evidence in [
+            "not_sent_chat_busy",
+            "not_sent_composer_occupied",
+            "not_sent_composer_unavailable",
+        ] {
+            let target = json!({
+                "last_delivery_status":"deferred",
+                "last_submission_evidence":{"submission_evidence":evidence}
+            });
+            assert!(
+                should_start_delivery_worker(false, &target),
+                "periodic tick did not re-arm {evidence}"
+            );
+        }
+    }
+
+    #[test]
+    fn periodic_tick_does_not_restart_permanent_or_uncertain_deliveries() {
+        for target in [
+            json!({}),
+            json!({"last_delivery_status":"handled"}),
+            json!({"last_delivery_status":"submission_ambiguous"}),
+            json!({"last_delivery_status":"deferred","last_submission_evidence":{"submission_evidence":"not_sent_login_required"}}),
+            json!({"last_delivery_status":"failed","last_submission_evidence":{"submission_evidence":"bound_conversation_unavailable"}}),
+        ] {
+            assert!(!should_start_delivery_worker(false, &target));
+        }
+        assert!(should_start_delivery_worker(true, &json!({})));
+    }
 }
