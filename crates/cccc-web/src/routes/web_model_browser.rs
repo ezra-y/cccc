@@ -98,6 +98,12 @@ pub(super) async fn ensure_open_for_actor(
             "Another group's newly submitted chat is still acquiring its conversation URL; wait for it before navigating the shared browser",
         ));
     }
+    if automation_hold(&state.home).is_some() {
+        return Err(ApiError::unavailable(
+            "browser_automation_paused",
+            "Automatic browser access is paused; use Open browser after resolving the restriction.",
+        ));
+    }
     let provider = super::web_model_connector_store::for_actor(state, group_id, actor_id)
         .and_then(|item| item["provider"].as_str().map(str::to_owned))
         .unwrap_or_else(|| "chatgpt".into());
@@ -149,6 +155,8 @@ async fn close(State(state): State<AppState>, Json(body): Json<Value>) -> ApiRes
     let group_id = required(&body, "group_id")?;
     let actor_id = required(&body, "actor_id")?;
     validate_actor(&state, &group_id, &actor_id)?;
+    pause_automation(&state.home, "user_closed_browser")
+        .map_err(|e| ApiError::bad(e.to_string()))?;
     state
         .browser_surfaces
         .close(surface_key())
@@ -296,6 +304,52 @@ async fn shared_info(
     shared_payload(&state, query.inspect).await
 }
 
+fn automation_hold_path(home: &cccc_core::HomeLayout) -> std::path::PathBuf {
+    home.root()
+        .join("state/web_model_browser/_shared/automation_hold.json")
+}
+
+// One account-wide stop, stored beside the existing shared browser state.
+// Status reads, new events, another group and process restarts cannot clear it.
+pub(super) fn automation_hold(home: &cccc_core::HomeLayout) -> Option<Value> {
+    match cccc_core::fs::read_json(&automation_hold_path(home)) {
+        Ok(value) => Some(value),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            Some(json!({"reason":"unreadable_automation_hold","detail":error.to_string()}))
+        }
+    }
+}
+
+fn pause_automation(home: &cccc_core::HomeLayout, reason: &str) -> std::io::Result<()> {
+    cccc_core::fs::write_json(
+        &automation_hold_path(home),
+        &json!({"reason":reason,"at":cccc_contracts::utc_now()}),
+    )
+}
+
+fn resume_automation(home: &cccc_core::HomeLayout) -> std::io::Result<()> {
+    match std::fs::remove_file(automation_hold_path(home)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+pub(super) fn hold_on_restriction(state: &AppState, evidence: &Value) -> Result<(), ApiError> {
+    let reason = evidence["submission_evidence"].as_str().unwrap_or("");
+    if matches!(
+        reason,
+        "not_sent_rate_limited"
+            | "not_sent_access_denied"
+            | "not_sent_verification_required"
+            | "not_sent_login_required"
+    ) {
+        pause_automation(&state.home, reason).map_err(|e| ApiError::bad(e.to_string()))?;
+    }
+    Ok(())
+}
+
 async fn shared_open(
     State(state): State<AppState>,
     Query(query): Query<InspectQuery>,
@@ -321,12 +375,23 @@ async fn shared_open(
         )
         .await
         .map_err(|error| ApiError::bad(format!("{error:#}")))?;
+    // Explicit user Open can release the hold only after visible readiness.
+    let readiness = state
+        .browser_surfaces
+        .prompt_readiness(surface_key())
+        .await
+        .map_err(|e| ApiError::bad(e.to_string()))?;
+    if readiness["ready"] == true {
+        resume_automation(&state.home).map_err(|e| ApiError::bad(e.to_string()))?;
+    }
     // ensure_open_system reuses an existing page without navigating it.
     shared_payload(&state, query.inspect).await
 }
 
 async fn shared_close(State(state): State<AppState>) -> ApiResult {
     let _operation = state.browser_surfaces.web_model_operation.lock().await;
+    pause_automation(&state.home, "user_closed_browser")
+        .map_err(|e| ApiError::bad(e.to_string()))?;
     state
         .browser_surfaces
         .close(surface_key())
@@ -337,8 +402,10 @@ async fn shared_close(State(state): State<AppState>) -> ApiResult {
 
 async fn shared_payload(state: &AppState, inspect: bool) -> ApiResult {
     let (surface, readiness) = observe_browser(state, inspect).await;
+    let hold = automation_hold(&state.home);
     let meta = &surface["metadata"];
-    let browser = json!({"scope":"shared","active":surface["active"],"ready":readiness["ready"],
+    let browser = json!({"scope":"shared","active":surface["active"],"ready":hold.is_none() && readiness["ready"] == true,
+        "automation_paused":hold.is_some(), "automation_hold":hold,
         "login_required":readiness["login_required"],"message":readiness["message"],
         "tab_url":readiness["tab_url"],"pid":meta["pid"],"cdp_port":meta["cdp_port"],
         "visibility":meta["visibility"],"profile_dir":meta["profile_dir"],"started_at":surface["started_at"]});
@@ -930,5 +997,110 @@ mod launch_policy_tests {
         for value in ["1", "true", " YES ", "on", "enabled"] {
             assert!(super::use_headless_browser(Some(value)));
         }
+    }
+}
+
+#[cfg(test)]
+mod automation_hold_tests {
+    use super::*;
+
+    #[test]
+    fn account_hold_survives_new_state_and_is_fail_closed() {
+        let temp = tempfile::tempdir().expect("isolated state");
+        let home = cccc_core::HomeLayout::from_path(temp.path().join("home")).expect("home");
+        home.initialize().expect("init");
+        assert!(automation_hold(&home).is_none());
+        pause_automation(&home, "not_sent_rate_limited").expect("persist account hold");
+        let restarted =
+            cccc_core::HomeLayout::from_path(home.root().to_path_buf()).expect("new process view");
+        for _ in 0..100 {
+            assert_eq!(
+                automation_hold(&restarted).expect("account hold")["reason"],
+                "not_sent_rate_limited"
+            );
+        }
+        std::fs::write(automation_hold_path(&home), b"invalid-json")
+            .expect("storage error fixture");
+        assert!(
+            automation_hold(&restarted).is_some(),
+            "corrupt storage must not permit traffic"
+        );
+        resume_automation(&home).expect("explicit user resume");
+        assert!(automation_hold(&restarted).is_none());
+    }
+
+    #[tokio::test]
+    async fn account_hold_prevents_actor_navigation_without_starting_a_browser() {
+        let temp = tempfile::tempdir().expect("isolated state");
+        let home = cccc_core::HomeLayout::from_path(temp.path().join("home")).expect("home");
+        home.initialize().expect("init");
+        let (shutdown, _) = tokio::sync::broadcast::channel(1);
+        let (_, _, browser, state) = crate::app_with_shutdown(
+            home.clone(),
+            shutdown,
+            crate::WebMode::Normal,
+            None,
+            crate::LiveBinding {
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
+            "test".into(),
+        );
+        hold_on_restriction(
+            &state,
+            &json!({"submission_evidence":"not_sent_conversation_archived"}),
+        )
+        .expect("archive only affects its group");
+        assert!(automation_hold(&home).is_none());
+        hold_on_restriction(
+            &state,
+            &json!({"submission_evidence":"not_sent_rate_limited"}),
+        )
+        .expect("account restriction");
+        let store = cccc_core::GroupStore::new(home.clone()).expect("store");
+        let mut ids = Vec::new();
+        for name in ["blocked-source", "other-group", "new-group"] {
+            let mut group = store.create(name, "").expect("group");
+            group.running = true;
+            let mut actor = cccc_contracts::Actor::new("web");
+            actor.runtime = cccc_contracts::ActorRuntime::WebModel;
+            actor.runner = cccc_contracts::RunnerKind::Headless;
+            actor
+                .env
+                .insert("CCCC_WEB_MODEL_DELIVERY_MODE".into(), "browser".into());
+            group.actors.push(actor);
+            store.save(&group).expect("active actor");
+            cccc_core::web_model_connectors::save_browser_target(
+                &home,
+                &group.group_id,
+                "web",
+                Some(json!({"kind":"existing_chat","url":"http://127.0.0.1:9/c/held"})),
+            )
+            .expect("target");
+            assert!(super::super::web_model_supervisor::actor_delivery_enabled(
+                &state,
+                &group.group_id,
+                "web"
+            ));
+            ids.push(group.group_id);
+        }
+        for gid in &ids {
+            assert!(matches!(
+                super::super::web_model_delivery::deliver_pending(&state, gid, "web")
+                    .await
+                    .expect("held delivery"),
+                super::super::web_model_delivery::DeliveryOutcome::Stopped
+            ));
+        }
+        for _ in 0..10 {
+            super::super::web_model_supervisor::ensure_running_actor(&state, None, true).await;
+            super::super::web_model_supervisor::ensure_running_actor(&state, None, false).await;
+            assert!(
+                !browser.info(surface_key()).await["active"]
+                    .as_bool()
+                    .unwrap_or(false)
+            );
+        }
+        assert!(automation_hold(&home).is_some());
     }
 }

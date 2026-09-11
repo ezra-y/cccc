@@ -50,6 +50,9 @@ pub(super) async fn ensure_running_actor(
 }
 
 async fn ensure_actor(state: &AppState, group_id: String, actor_id: String, event_trigger: bool) {
+    if super::web_model_browser::automation_hold(&state.home).is_some() {
+        return;
+    }
     // Chat-first groups can dispatch locally before providing a return URL.
     // Do not launch a browser or ask for sign-in until a return target is configured.
     let Ok(target) = super::web_model_delivery_state::target(state, &group_id, &actor_id) else {
