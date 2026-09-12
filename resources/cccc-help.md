@@ -52,6 +52,11 @@ per-recipient runtime truth is `runtime.delivery`.
 - Use `cccc_task` only for durable work; `cccc_tracked_send` adds owner, scope, done criteria, and evidence. Otherwise reply/send.
 - Task lifecycle uses `move`; use `update` only when changing other task fields too.
 - A coordination interrupt is not automatically a task switch; resume the recorded task unless priority actually changed; do not replace active state with the interrupt itself.
+- A completed member report is a responsibility handoff, not proof that the whole task is done. The original report remains the visible source; relay state only records who owns the next step.
+- `add_decision` and `add_handoff` are ordinary human notes; they do not resolve machine responsibility. After reviewing a completed report, call `cccc_coordination(action="decide", event_ids=[...], decision=...)`.
+- Reading Mail or replying to a report does not resolve responsibility. `continue` must include `next_actor_id`, `next_title`, and `next_text`, which reuse the tracked-task path to create and deliver real work. `wait_user`, `complete`, and `blocked` record machine state only; the model's normal reply remains the human-facing output. `blocked` requires a reason.
+- `caller_may_idle=true` means this actor transferred or ended its current responsibility. `safe_to_idle=true` additionally means no other live task or unresolved handoff prevents the group from being quiet.
+- If a Web Foreman receives a report but records no decision, CCCC sends one bounded reminder. After that reminder is delivered and the page becomes idle, CCCC assigns the unresolved handoff to user intervention once instead of repeatedly spending model turns; the exact same handoff can later resume with `decide`.
 
 ### Recovery and Recall
 

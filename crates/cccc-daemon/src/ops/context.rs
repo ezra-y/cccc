@@ -133,6 +133,12 @@ fn authorize(
     operation: &Map<String, Value>,
     by: &str,
 ) -> Result<(), OpError> {
+    if operation.get("op").and_then(Value::as_str) == Some("coordination.relay.note") {
+        return Err(OpError::new(
+            "permission_denied",
+            "coordination.relay.note is owned by the relay decision operation",
+        ));
+    }
     let Some(role) = role else {
         return Ok(());
     };

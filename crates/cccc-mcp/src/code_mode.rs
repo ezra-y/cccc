@@ -31,11 +31,13 @@ const PROCESS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const NODE_RUNTIME: &str = include_str!("../../../resources/code_mode_runtime.js");
 const METADATA: &str = include_str!("../../../resources/code_mode_metadata.json");
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 struct Owner {
     home: PathBuf,
     group_id: String,
     actor_id: String,
+    // Transient transport identity; never serialized or logged with the cell.
+    gateway_session: Option<String>,
 }
 
 struct CodeCell {
@@ -59,9 +61,10 @@ pub async fn start(
     client: &DaemonClient,
     root: &Path,
     args: &Map<String, Value>,
+    context: Option<crate::RequestContext<'_>>,
 ) -> Result<Value, String> {
     ensure_enabled()?;
-    let owner = resolve_owner(home, args)?;
+    let owner = resolve_owner(home, args, context)?;
     let raw_source = args
         .get("source")
         .or_else(|| args.get("code"))
@@ -107,9 +110,10 @@ pub async fn wait(
     home: &HomeLayout,
     client: &DaemonClient,
     args: &Map<String, Value>,
+    context: Option<crate::RequestContext<'_>>,
 ) -> Result<Value, String> {
     ensure_enabled()?;
-    let owner = resolve_owner(home, args)?;
+    let owner = resolve_owner(home, args, context)?;
     let cell_id = args
         .get("cell_id")
         .and_then(Value::as_str)
@@ -186,7 +190,11 @@ pub(crate) fn enabled() -> bool {
     ensure_enabled().is_ok()
 }
 
-fn resolve_owner(home: &HomeLayout, args: &Map<String, Value>) -> Result<Owner, String> {
+fn resolve_owner(
+    home: &HomeLayout,
+    args: &Map<String, Value>,
+    context: Option<crate::RequestContext<'_>>,
+) -> Result<Owner, String> {
     let group_id = args
         .get("group_id")
         .and_then(Value::as_str)
@@ -223,6 +231,9 @@ fn resolve_owner(home: &HomeLayout, args: &Map<String, Value>) -> Result<Owner, 
         home: home.root().to_path_buf(),
         group_id: group_id.to_owned(),
         actor_id: actor_id.to_owned(),
+        gateway_session: context
+            .and_then(|context| context.gateway_session)
+            .map(str::to_owned),
     })
 }
 
@@ -629,6 +640,22 @@ async fn call_nested(
         Some(Value::Object(object)) => object.clone(),
         Some(_) => return Err(format!("{name} expects a JSON object argument").into()),
     };
+    if let Some(session) = owner.gateway_session.as_deref() {
+        let result = Box::pin(crate::router::call_with_context(
+            home,
+            client,
+            name,
+            args,
+            Some(crate::RequestContext {
+                group_id: &owner.group_id,
+                actor_id: &owner.actor_id,
+                gateway_session: Some(session),
+            }),
+            false,
+        ))
+        .await?;
+        return Ok(result.get("structuredContent").cloned().unwrap_or(result));
+    }
     args.insert("group_id".into(), Value::String(owner.group_id.clone()));
     args.insert("by".into(), Value::String(owner.actor_id.clone()));
     args.entry("actor_id")

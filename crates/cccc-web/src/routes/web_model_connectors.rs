@@ -29,6 +29,10 @@ pub fn routes() -> Router<AppState> {
             "/api/v1/web-model/connectors/{connector_id}",
             axum::routing::delete(provisioning::revoke),
         )
+        .route(
+            "/api/v1/web-model/connectors/{connector_id}/binding",
+            post(provisioning::prepare_binding),
+        )
         .route("/api/v1/mcp", post(admin_mcp))
         .route(
             "/mcp/web-model/{connector_id}",

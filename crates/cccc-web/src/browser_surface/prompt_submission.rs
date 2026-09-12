@@ -12,7 +12,6 @@ use super::BrowserSurfaces;
 use super::navigation::goto_dom_content_loaded;
 
 const COMPOSER_SELECTOR: &str = "[data-cccc-web-model-composer=\"cccc-web-model-composer\"]";
-const SEND_SELECTOR: &str = "[data-cccc-web-model-send=\"cccc-web-model-send\"]";
 const COMPOSER_TIMEOUT: Duration = Duration::from_secs(30);
 const PROMPT_STAGING_TIMEOUT: Duration = Duration::from_secs(3);
 const SEND_CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -56,14 +55,17 @@ struct RequestSubmitResult {
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
-struct SubmissionSnapshot {
-    url: String,
+pub(super) struct SubmissionSnapshot {
+    pub(super) url: String,
     echo_found: bool,
-    running: bool,
-    stop_visible: bool,
+    pub(super) running: bool,
+    pub(super) stop_visible: bool,
     composer_exact: bool,
     composer_contains_prompt: bool,
-    composer_chars: usize,
+    pub(super) composer_chars: usize,
+    pub(super) latest_turn_id: String,
+    response_started: bool,
+    pub(super) page_blocker: String,
     user_message_count: usize,
     send_enabled_count: usize,
 }
@@ -112,6 +114,7 @@ impl BrowserSurfaces {
         }))
     }
 
+    #[cfg(test)]
     pub(crate) async fn submit_prompt_with_attachment(
         &self,
         key: &str,
@@ -120,10 +123,76 @@ impl BrowserSurfaces {
         attachment_path: Option<&Path>,
         delivery_id: &str,
     ) -> Result<PromptSubmissionOutcome> {
+        self.submit_prompt_with_attachment_before_dispatch(
+            key,
+            target_url,
+            prompt,
+            attachment_path,
+            delivery_id,
+            || async { Ok(()) },
+        )
+        .await
+    }
+
+    // Err means no Send/Enter action was attempted. Once dispatch starts, all
+    // uncertain outcomes are returned as Ambiguous, never as a retryable error.
+    pub(crate) async fn submit_prompt_with_attachment_before_dispatch<F, Fut, Permit>(
+        &self,
+        key: &str,
+        target_url: &str,
+        prompt: &str,
+        attachment_path: Option<&Path>,
+        delivery_id: &str,
+        before_dispatch: F,
+    ) -> Result<PromptSubmissionOutcome>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<Permit>>,
+    {
         if prompt.trim().is_empty() {
             bail!("browser prompt is empty");
         }
         let page = self.page(key).await?;
+        let current_url = page.url().await?.unwrap_or_default();
+        let current = inspect_submission(&page, prompt, &submission_needles(prompt)).await?;
+        // Account-level refusal blocks navigation; an archived chat only blocks
+        // itself. Do not cancel its archive or touch its messages.
+        if !current.page_blocker.is_empty()
+            && (current.page_blocker != "conversation_archived"
+                || target_url.is_empty()
+                || same_page(&current_url, target_url))
+        {
+            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:page_blocked",
+                &format!("not_sent_{}", current.page_blocker),
+                "",
+                &current,
+                &current,
+            )));
+        }
+        if !target_url.is_empty() && !same_page(&current_url, target_url) {
+            if current.composer_chars > 0 {
+                return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                    false,
+                    "none:composer_occupied",
+                    "not_sent_composer_occupied",
+                    "",
+                    &current,
+                    &current,
+                )));
+            }
+            if current.running || current.stop_visible {
+                return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                    false,
+                    "none:chat_busy",
+                    "not_sent_chat_busy",
+                    "",
+                    &current,
+                    &current,
+                )));
+            }
+        }
         if has_chatgpt_conversation_route(target_url) {
             self.align_chatgpt_conversation_target(key, target_url, Duration::from_secs(5))
                 .await?;
@@ -133,11 +202,42 @@ impl BrowserSurfaces {
                 goto_dom_content_loaded(&page, target_url).await?;
             }
         }
+        if sign_in_required(&page).await? {
+            let observed = inspect_submission(&page, prompt, &submission_needles(prompt)).await?;
+            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:login_required",
+                "not_sent_login_required",
+                "",
+                &observed,
+                &observed,
+            )));
+        }
         dismiss_duplicate_upload_dialog(&page).await?;
 
         let needles = submission_needles(prompt);
         let existing = inspect_submission(&page, prompt, &needles).await?;
+        if bound_target_changed(target_url, &existing.url) {
+            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:target_changed",
+                "not_sent_target_changed",
+                "",
+                &existing,
+                &existing,
+            )));
+        }
         if existing.echo_found {
+            if provisional_submission(&existing) {
+                return Ok(PromptSubmissionOutcome::Ambiguous(evidence(
+                    false,
+                    "existing:message_echo",
+                    "optimistic_echo_unconfirmed",
+                    "",
+                    &existing,
+                    &existing,
+                )));
+            }
             self.record_page_state(key, &page).await;
             return Ok(PromptSubmissionOutcome::Verified(evidence(
                 true,
@@ -149,13 +249,74 @@ impl BrowserSurfaces {
             )));
         }
 
-        let composer = wait_for_composer(&page).await?;
+        if !existing.page_blocker.is_empty() {
+            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:page_blocked",
+                &format!("not_sent_{}", existing.page_blocker),
+                "",
+                &existing,
+                &existing,
+            )));
+        }
+        if existing.running || existing.stop_visible {
+            self.record_page_state(key, &page).await;
+            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:chat_busy",
+                "not_sent_chat_busy",
+                "",
+                &existing,
+                &existing,
+            )));
+        }
+        let composer = match wait_for_composer(&page).await {
+            Ok(composer) => composer,
+            Err(error) => {
+                return Ok(PromptSubmissionOutcome::Deferred(json!({
+                    "submitted":false, "submission_evidence":"not_sent_composer_unavailable",
+                    "error":error.to_string(), "tab_url":page.url().await?.unwrap_or_default()
+                })));
+            }
+        };
         let staged = inspect_submission(&page, prompt, &needles).await?;
+        if bound_target_changed(target_url, &staged.url) {
+            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:target_changed",
+                "not_sent_target_changed",
+                "",
+                &staged,
+                &staged,
+            )));
+        }
+        if staged.running
+            || staged.stop_visible
+            || (staged.composer_chars > 0 && !staged.composer_exact)
+        {
+            self.record_page_state(key, &page).await;
+            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:composer_occupied",
+                "not_sent_composer_occupied",
+                &composer.descriptor,
+                &staged,
+                &staged,
+            )));
+        }
         if !staged.composer_exact {
             focus_and_select_composer(&page).await?;
-            page.execute(InsertTextParams::new(prompt))
-                .await
-                .context("insert prompt into visible browser composer")?;
+            let ownership = json!({"install":true,"prompt":prompt,"delivery_id":delivery_id});
+            page.evaluate(format!("({OBSERVE_STAGED_PROMPT_SCRIPT})({ownership})"))
+                .await?;
+            let inserted = page.execute(InsertTextParams::new(prompt)).await;
+            let unobserved = page
+                .evaluate(format!(
+                    "({OBSERVE_STAGED_PROMPT_SCRIPT})({{install:false}})"
+                ))
+                .await;
+            inserted.context("insert prompt into visible browser composer")?;
+            unobserved?;
         }
         let mut baseline = wait_for_prompt_staged(&page, prompt, &needles).await?;
         if let Some(path) = attachment_path {
@@ -185,31 +346,6 @@ impl BrowserSurfaces {
 
         let readiness = wait_for_send_control(&page).await?;
         match readiness {
-            SendReadiness::Ready(candidate) => {
-                let action = candidate.descriptor;
-                let click = match page.find_element(SEND_SELECTOR).await {
-                    Ok(button) => button.click().await.map(|_| ()),
-                    Err(error) => Err(error),
-                };
-                let action = if click.is_ok() {
-                    action
-                } else {
-                    format!("{action}:click_dispatch_unknown")
-                };
-                Ok(self
-                    .verify_attempt(
-                        key,
-                        &page,
-                        SubmissionAttempt {
-                            prompt,
-                            needles: &needles,
-                            input: &composer.descriptor,
-                            action: &action,
-                            baseline: &baseline,
-                        },
-                    )
-                    .await)
-            }
             SendReadiness::Deferred(probe) => Ok(self
                 .classify_deferred_submission(
                     key,
@@ -224,24 +360,35 @@ impl BrowserSurfaces {
                     "send_control_deferred",
                 )
                 .await),
-            SendReadiness::Missing(probe) => {
-                let request_submit = request_submit(&page).await;
+            SendReadiness::Ready(probe) | SendReadiness::Missing(probe) => {
+                let permit = match before_dispatch().await {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        self.clear_staged_prompt(key, prompt, delivery_id).await?;
+                        return Err(error);
+                    }
+                };
+                let request_submit = request_submit(&page, target_url).await;
                 match request_submit {
-                    Ok(result) if result.unsafe_state => Ok(self
-                        .classify_deferred_submission(
-                            key,
-                            &page,
-                            SubmissionAttempt {
-                                prompt,
-                                needles: &needles,
-                                input: &composer.descriptor,
-                                action: &result.action,
-                                baseline: &baseline,
-                            },
-                            "send_control_deferred",
-                        )
-                        .await),
+                    Ok(result) if result.unsafe_state => {
+                        drop(permit);
+                        Ok(self
+                            .classify_deferred_submission(
+                                key,
+                                &page,
+                                SubmissionAttempt {
+                                    prompt,
+                                    needles: &needles,
+                                    input: &composer.descriptor,
+                                    action: &result.action,
+                                    baseline: &baseline,
+                                },
+                                "send_control_deferred",
+                            )
+                            .await)
+                    }
                     Ok(result) if result.invoked => {
+                        drop(permit);
                         let action = if result.error.is_empty() {
                             result.action
                         } else {
@@ -261,26 +408,41 @@ impl BrowserSurfaces {
                             )
                             .await)
                     }
-                    Ok(_) if probe.running || probe.stop_visible => Ok(self
-                        .classify_deferred_submission(
-                            key,
-                            &page,
-                            SubmissionAttempt {
-                                prompt,
-                                needles: &needles,
-                                input: &composer.descriptor,
-                                action: &probe.descriptor,
-                                baseline: &baseline,
-                            },
-                            "send_control_deferred",
-                        )
-                        .await),
+                    Ok(_) if probe.running || probe.stop_visible => {
+                        drop(permit);
+                        Ok(self
+                            .classify_deferred_submission(
+                                key,
+                                &page,
+                                SubmissionAttempt {
+                                    prompt,
+                                    needles: &needles,
+                                    input: &composer.descriptor,
+                                    action: &probe.descriptor,
+                                    baseline: &baseline,
+                                },
+                                "send_control_deferred",
+                            )
+                            .await)
+                    }
                     Ok(_) => {
+                        let current = page.url().await.ok().flatten().unwrap_or_default();
+                        if bound_target_changed(target_url, &current) {
+                            return Ok(PromptSubmissionOutcome::Deferred(evidence(
+                                false,
+                                "none:target_changed",
+                                "not_sent_target_changed",
+                                &composer.descriptor,
+                                &baseline,
+                                &baseline,
+                            )));
+                        }
                         let action = "keyboard:Enter";
                         let press = match page.find_element(COMPOSER_SELECTOR).await {
                             Ok(input) => input.press_key("Enter").await.map(|_| ()),
                             Err(error) => Err(error),
                         };
+                        drop(permit);
                         let action = if press.is_ok() {
                             action.to_owned()
                         } else {
@@ -300,22 +462,43 @@ impl BrowserSurfaces {
                             )
                             .await)
                     }
-                    Err(_) => Ok(self
-                        .verify_attempt(
-                            key,
-                            &page,
-                            SubmissionAttempt {
-                                prompt,
-                                needles: &needles,
-                                input: &composer.descriptor,
-                                action: "form.requestSubmit:dispatch_unknown",
-                                baseline: &baseline,
-                            },
-                        )
-                        .await),
+                    Err(_) => {
+                        drop(permit);
+                        Ok(self
+                            .verify_attempt(
+                                key,
+                                &page,
+                                SubmissionAttempt {
+                                    prompt,
+                                    needles: &needles,
+                                    input: &composer.descriptor,
+                                    action: "form.requestSubmit:dispatch_unknown",
+                                    baseline: &baseline,
+                                },
+                            )
+                            .await)
+                    }
                 }
             }
         }
+    }
+
+    pub(crate) async fn clear_staged_prompt(
+        &self,
+        key: &str,
+        prompt: &str,
+        delivery_id: &str,
+    ) -> Result<()> {
+        let page = self.page(key).await?;
+        let payload = json!({"prompt":prompt,"delivery_id":delivery_id});
+        let cleared = page
+            .evaluate(format!("({CLEAR_STAGED_PROMPT_SCRIPT})({payload})"))
+            .await?
+            .into_value::<bool>()?;
+        if !cleared {
+            bail!("could not clear the cancelled browser prompt");
+        }
+        Ok(())
     }
 
     async fn classify_deferred_submission(
@@ -341,7 +524,17 @@ impl BrowserSurfaces {
             }
         };
         self.record_page_state(key, page).await;
-        if observed.echo_found {
+        if bound_target_changed(&attempt.baseline.url, &observed.url) {
+            return PromptSubmissionOutcome::Deferred(evidence(
+                false,
+                "none:target_changed",
+                "not_sent_target_changed",
+                attempt.input,
+                attempt.baseline,
+                &observed,
+            ));
+        }
+        if observed.echo_found && !provisional_submission(&observed) {
             return PromptSubmissionOutcome::Verified(evidence(
                 true,
                 attempt.action,
@@ -401,7 +594,17 @@ impl BrowserSurfaces {
         loop {
             match inspect_submission(page, prompt, needles).await {
                 Ok(snapshot) => {
-                    if snapshot.echo_found {
+                    if bound_target_changed(&baseline.url, &snapshot.url) {
+                        return PromptSubmissionOutcome::Ambiguous(evidence(
+                            false,
+                            action,
+                            "submission_target_changed",
+                            input,
+                            baseline,
+                            &snapshot,
+                        ));
+                    }
+                    if snapshot.echo_found && !provisional_submission(&snapshot) {
                         self.record_page_state(key, page).await;
                         return PromptSubmissionOutcome::Verified(evidence(
                             true,
@@ -452,7 +655,7 @@ impl BrowserSurfaces {
         ))
     }
 
-    async fn page(&self, key: &str) -> Result<Page> {
+    pub(super) async fn page(&self, key: &str) -> Result<Page> {
         self.sessions
             .lock()
             .await
@@ -550,6 +753,56 @@ impl BrowserSurfaces {
         }
     }
 
+    pub(crate) async fn relay_surface_idle(&self, key: &str) -> Result<bool> {
+        let page = self.page(key).await?;
+        if sign_in_required(&page).await? {
+            return Ok(false);
+        }
+        let snapshot = inspect_submission(&page, "__cccc_relay_idle_probe__", &[]).await?;
+        Ok(!snapshot.running
+            && !snapshot.stop_visible
+            && snapshot.page_blocker.is_empty()
+            && snapshot.composer_chars == 0
+            && composer_present(&page).await?)
+    }
+
+    pub(crate) async fn relay_surface_deferral(&self, key: &str) -> Result<Option<Value>> {
+        let page = self.page(key).await?;
+        let snapshot = inspect_submission(&page, "__cccc_relay_busy_probe__", &[]).await?;
+        let blocker = format!("not_sent_{}", snapshot.page_blocker);
+        let reason = if !snapshot.page_blocker.is_empty() {
+            blocker.as_str()
+        } else if sign_in_required(&page).await? {
+            "not_sent_login_required"
+        } else if snapshot.running || snapshot.stop_visible {
+            "not_sent_chat_busy"
+        } else if snapshot.composer_chars > 0 {
+            "not_sent_composer_occupied"
+        } else if !composer_present(&page).await? {
+            "not_sent_composer_unavailable"
+        } else {
+            return Ok(None);
+        };
+        let mut evidence = serde_json::to_value(snapshot).context("encode relay deferral")?;
+        evidence["submitted"] = json!(false);
+        evidence["submission_evidence"] = json!(reason);
+        Ok(Some(evidence))
+    }
+
+    pub(crate) async fn relay_target_deferral(
+        &self,
+        key: &str,
+        target_url: &str,
+    ) -> Result<Option<Value>> {
+        Ok(self.relay_surface_deferral(key).await?.filter(|blocked| {
+            !matches!(
+                blocked["submission_evidence"].as_str(),
+                Some("not_sent_composer_unavailable" | "not_sent_conversation_archived")
+            ) || target_url.is_empty()
+                || same_page(blocked["url"].as_str().unwrap_or(""), target_url)
+        }))
+    }
+
     pub(crate) async fn prompt_readiness(&self, key: &str) -> Result<Value> {
         let page = self.page(key).await?;
         let url = page.url().await?.unwrap_or_default();
@@ -559,17 +812,24 @@ impl BrowserSurfaces {
             .context("inspect visible browser composer")?
             .into_value::<ComposerCandidate>()
             .context("decode visible browser composer")?;
-        let ready = !candidate.selector.is_empty();
+        let login_required = sign_in_required(&page).await?;
+        let page_blocker = inspect_submission(&page, "", &[]).await?.page_blocker;
+        let ready = !candidate.selector.is_empty() && !login_required && page_blocker.is_empty();
         let readiness = json!({
             "ready":ready,
-            "login_required":!ready,
+            "login_required":login_required,
             "tab_url":url,
             "input_selector":candidate.descriptor,
+            "page_blocker":page_blocker,
             "checked_at":cccc_contracts::utc_now(),
-            "message":if ready {
-                "Browser model composer is ready."
+            "message":if !page_blocker.is_empty() {
+                "The conversation is archived or browser access is restricted. The report is retained; automatic page recovery is stopped."
+            } else if login_required {
+                "Sign in to ChatGPT in this browser before expecting tool access or saved-conversation delivery."
+            } else if ready {
+                "Browser model composer is ready; account tool access still requires a real call."
             } else {
-                "Browser model sign-in or composer setup is required."
+                "Browser model composer is not ready yet."
             }
         });
         self.record_prompt_readiness(key, &page, &readiness).await;
@@ -607,6 +867,14 @@ impl BrowserSurfaces {
         }
         session.updated_at = cccc_contracts::utc_now();
     }
+}
+
+async fn composer_present(page: &Page) -> Result<bool> {
+    let input: Value = page
+        .evaluate(format!("({SELECT_COMPOSER_SCRIPT})()"))
+        .await?
+        .into_value()?;
+    Ok(input["selector"].as_str().is_some_and(|s| !s.is_empty()))
 }
 
 async fn dismiss_duplicate_upload_dialog(page: &Page) -> Result<()> {
@@ -740,6 +1008,12 @@ async fn attach_compatibility_image(
     }
 }
 
+fn bound_target_changed(expected: &str, observed: &str) -> bool {
+    !expected.is_empty()
+        && (has_chatgpt_conversation_route(expected) || !is_chatgpt_url(expected))
+        && !same_page(expected, observed)
+}
+
 fn same_page(left: &str, right: &str) -> bool {
     let Ok(mut left) = reqwest::Url::parse(left) else {
         return false;
@@ -818,7 +1092,9 @@ async fn wait_for_send_control(page: &Page) -> Result<SendReadiness> {
     let mut stop_only_since = None;
     loop {
         let probe = page
-            .evaluate(format!("({SELECT_SEND_CONTROL_SCRIPT})()"))
+            .evaluate(format!(
+                "({SELECT_SEND_CONTROL_SCRIPT})({GENERATION_STOP_CONTROL_SCRIPT})"
+            ))
             .await
             .context("inspect browser composer send control")?
             .into_value::<SendProbe>()
@@ -852,31 +1128,54 @@ async fn wait_for_send_control(page: &Page) -> Result<SendReadiness> {
     }
 }
 
-async fn request_submit(page: &Page) -> Result<RequestSubmitResult> {
-    page.evaluate(format!("({REQUEST_SUBMIT_SCRIPT})()"))
-        .await
-        .context("request browser composer submission")?
-        .into_value::<RequestSubmitResult>()
-        .context("decode browser composer requestSubmit result")
+async fn request_submit(page: &Page, target_url: &str) -> Result<RequestSubmitResult> {
+    // Recheck the actual control and invoke it in the same browser task. Native
+    // coordinate clicks wait on IntersectionObserver, which may stall in a
+    // background tab. A dispatch error remains ambiguous; never click twice.
+    let expected = if has_chatgpt_conversation_route(target_url) || !is_chatgpt_url(target_url) {
+        target_url
+    } else {
+        ""
+    };
+    let expected = serde_json::to_string(expected)?;
+    page.evaluate(format!(
+        "({REQUEST_SUBMIT_SCRIPT})({{...({SELECT_SEND_CONTROL_SCRIPT})({GENERATION_STOP_CONTROL_SCRIPT}), expected_url:{expected}}}, {GENERATION_STOP_CONTROL_SCRIPT})"
+    ))
+    .await
+    .context("request browser composer submission")?
+    .into_value::<RequestSubmitResult>()
+    .context("decode browser composer requestSubmit result")
 }
 
-async fn inspect_submission(
+pub(super) async fn inspect_submission(
     page: &Page,
     prompt: &str,
     needles: &[String],
 ) -> Result<SubmissionSnapshot> {
     let payload = serde_json::to_string(&json!({"prompt":prompt,"needles":needles}))?;
-    page.evaluate(format!("({INSPECT_SUBMISSION_SCRIPT})({payload})"))
-        .await
-        .context("inspect browser prompt submission")?
-        .into_value::<SubmissionSnapshot>()
-        .context("decode browser prompt submission state")
+    page.evaluate(format!(
+        "({INSPECT_SUBMISSION_SCRIPT})({payload}, {GENERATION_STOP_CONTROL_SCRIPT})"
+    ))
+    .await
+    .context("inspect browser prompt submission")?
+    .into_value::<SubmissionSnapshot>()
+    .context("decode browser prompt submission state")
+}
+
+// A request-* container can outlive its optimistic placeholder. A real
+// assistant message after the latest user message also proves reception;
+// neither an earlier answer nor the empty placeholder does.
+fn provisional_submission(snapshot: &SubmissionSnapshot) -> bool {
+    snapshot.latest_turn_id.starts_with("request-") && !snapshot.response_started
 }
 
 fn weak_submission_evidence(
     baseline: &SubmissionSnapshot,
     current: &SubmissionSnapshot,
 ) -> Option<&'static str> {
+    if provisional_submission(current) {
+        return Some("optimistic_echo_unconfirmed");
+    }
     if conversation_route_changed(&baseline.url, &current.url) {
         return Some("conversation_url_changed");
     }
@@ -893,7 +1192,7 @@ fn verified_submission_evidence(
     baseline: &SubmissionSnapshot,
     current: &SubmissionSnapshot,
 ) -> Option<&'static str> {
-    (current.user_message_count > baseline.user_message_count)
+    (!provisional_submission(current) && current.user_message_count > baseline.user_message_count)
         .then_some("user_message_count_increased")
 }
 
@@ -951,20 +1250,7 @@ pub(crate) fn has_chatgpt_conversation_route(value: &str) -> bool {
 }
 
 pub(crate) fn normalized_chatgpt_conversation_url(value: &str) -> Option<String> {
-    if !is_chatgpt_url(value) {
-        return None;
-    }
-    let mut url = reqwest::Url::parse(value).ok()?;
-    if url.scheme() != "https" {
-        return None;
-    }
-    let conversation_id = chatgpt_conversation_id(&url)?;
-    if provisional_conversation_id(&conversation_id) {
-        return None;
-    }
-    url.set_query(None);
-    url.set_fragment(None);
-    Some(url.to_string())
+    cccc_core::web_model_connectors::normalized_chatgpt_conversation_url(value)
 }
 
 pub(crate) fn conversation_target_matches(expected: &str, observed: &str) -> bool {
@@ -1054,7 +1340,31 @@ fn with_attachment_evidence(
     }
 }
 
-const SELECT_COMPOSER_SCRIPT: &str = r#"() => {
+// Check explicit UI authentication controls, not cookies or text inside a report.
+// ponytail: this is a DOM preflight, not proof that the account can call an MCP tool.
+// Real tool execution remains the acceptance check when ChatGPT changes its UI.
+pub(super) async fn sign_in_required(page: &Page) -> Result<bool> {
+    page.evaluate(SIGN_IN_REQUIRED_SCRIPT)
+        .await?
+        .into_value()
+        .context("decode browser sign-in state")
+}
+
+const SIGN_IN_REQUIRED_SCRIPT: &str = r#"(() => {
+    const candidates = document.querySelectorAll(
+        '[data-mobile-auth-entry-action="login"], [data-testid="login-button"], [data-testid="signup-button"], a[href="/auth/login"], a[href^="/auth/login?"], header button, nav button, [role="navigation"] button'
+    );
+    return Array.from(candidates).some(node => {
+        if (node.closest('[data-message-author-role], [data-testid^="conversation-turn"], [inert], [aria-hidden="true"]')) return false;
+        const rect=node.getBoundingClientRect(); const style=getComputedStyle(node);
+        if (!rect.width || !rect.height || style.display==='none' || style.visibility==='hidden' || Number.parseFloat(style.opacity||'1')<=0.01) return false;
+        const explicit=node.matches('[data-mobile-auth-entry-action="login"], [data-testid="login-button"], [data-testid="signup-button"], a[href="/auth/login"], a[href^="/auth/login?"]');
+        const label=(node.getAttribute('aria-label')||node.innerText||'').trim();
+        return explicit || /^(log in|sign in|sign up|登录|登入|注册|免費註冊|免费注册|ログイン)$/i.test(label);
+    });
+})()"#;
+
+pub(super) const SELECT_COMPOSER_SCRIPT: &str = r#"() => {
     const markerName = 'data-cccc-web-model-composer';
     const markerValue = 'cccc-web-model-composer';
     const visible = node => {
@@ -1142,7 +1452,17 @@ const FOCUS_AND_SELECT_SCRIPT: &str = r#"() => {
     return document.activeElement === input;
 }"#;
 
-const SELECT_SEND_CONTROL_SCRIPT: &str = r#"() => {
+// Share the actual control predicate across readiness, Send and final form submission.
+const GENERATION_STOP_CONTROL_SCRIPT: &str = r#"node => {
+    if (node.closest('nav, aside, [role="navigation"], [data-message-author-role], [data-testid^="conversation-turn"], main article')
+        || node.hasAttribute('data-conversation-options-trigger')) return false;
+    if (node.getAttribute('data-testid') === 'stop-button') return true;
+    const action = String(node.getAttribute('aria-label') || node.getAttribute('title')
+        || node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    return /^(?:stop(?: streaming| generating| generation)?|停止(?:生成|回答|响应|回复|流式传输)?|中止|生成を停止|応答を停止|cancel generation|interrupt)$/.test(action);
+}"#;
+
+const SELECT_SEND_CONTROL_SCRIPT: &str = r#"isGenerationStop => {
     const input = document.querySelector('[data-cccc-web-model-composer="cccc-web-model-composer"]');
     const markerName = 'data-cccc-web-model-send';
     const markerValue = 'cccc-web-model-send';
@@ -1159,7 +1479,7 @@ const SELECT_SEND_CONTROL_SCRIPT: &str = r#"() => {
     const label = node => [node.getAttribute('aria-label') || '', node.getAttribute('title') || '',
         node.getAttribute('data-testid') || '', node.id || '', node.className || '',
         node.innerText || node.textContent || ''].join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
-    const stop = node => /\bstop\b|停止|中止|cancel generation|interrupt/.test(label(node));
+    const stop = isGenerationStop;
     const unsafe = node => stop(node)
         || /retry|signin|sign in|log in|login|voice|dictat|microphone|attach|upload|google|microsoft|apple/.test(label(node));
     const sendLike = node => {
@@ -1209,7 +1529,24 @@ const SELECT_SEND_CONTROL_SCRIPT: &str = r#"() => {
     };
 }"#;
 
-const REQUEST_SUBMIT_SCRIPT: &str = r#"() => {
+const REQUEST_SUBMIT_SCRIPT: &str = r#"(probe, isGenerationStop) => {
+    const route = value => { const u = new URL(value, location.href); u.search=''; u.hash=''; return u.href; };
+    if (probe.expected_url && route(probe.expected_url) !== route(location.href)) {
+        return {action:'none:target_changed',invoked:false,unsafe_state:true,error:'conversation target changed'};
+    }
+    if (probe.running || probe.stop_visible) {
+        return { action: '', invoked: false, unsafe_state: true, error: '' };
+    }
+    const selected = probe.selector ? document.querySelector(probe.selector) : null;
+    if (selected) {
+        const action = `dom.click:${probe.descriptor}`;
+        try {
+            selected.click();
+            return { action, invoked: true, unsafe_state: false, error: '' };
+        } catch (error) {
+            return { action, invoked: true, unsafe_state: false, error: String(error || '') };
+        }
+    }
     const input = document.querySelector('[data-cccc-web-model-composer="cccc-web-model-composer"]');
     const form = input?.closest('form') || null;
     if (!form || typeof form.requestSubmit !== 'function') {
@@ -1225,7 +1562,7 @@ const REQUEST_SUBMIT_SCRIPT: &str = r#"() => {
         node.getAttribute('data-testid') || '', node.id || '', node.innerText || node.textContent || '']
         .join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
     const buttons = Array.from(form.querySelectorAll('button, [role="button"]')).filter(visible);
-    if (buttons.some(node => /\bstop\b|停止|中止|cancel generation|interrupt/.test(label(node)))) {
+    if (buttons.some(isGenerationStop)) {
         return { action: '', invoked: false, unsafe_state: true, error: '' };
     }
     const submit = buttons.find(node => !node.disabled
@@ -1239,7 +1576,7 @@ const REQUEST_SUBMIT_SCRIPT: &str = r#"() => {
     }
 }"#;
 
-const INSPECT_SUBMISSION_SCRIPT: &str = r#"payload => {
+const INSPECT_SUBMISSION_SCRIPT: &str = r#"(payload, isGenerationStop) => {
     const normalize = value => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
     const expected = normalize(payload.prompt);
     const prefix = expected.slice(0, 160);
@@ -1261,7 +1598,7 @@ const INSPECT_SUBMISSION_SCRIPT: &str = r#"payload => {
         ((node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) && !node.disabled && !node.readOnly)
         || node.isContentEditable || node.getAttribute('contenteditable') === 'true'
     );
-    const read = node => normalize(('value' in node && node.value) ? node.value : (node.innerText || node.textContent || ''));
+    const read = node => normalize('value' in node ? node.value : (node.innerText || node.textContent || ''));
     const marked = document.querySelector('[data-cccc-web-model-composer="cccc-web-model-composer"]');
     const markedText = marked ? read(marked) : '';
     const composers = Array.from(new Set([
@@ -1280,11 +1617,25 @@ const INSPECT_SUBMISSION_SCRIPT: &str = r#"payload => {
         const text = read(node);
         return needles.some(needle => text.includes(needle));
     });
+    const messages = Array.from(document.querySelectorAll('[data-message-author-role]'));
+    const lastUser = messages.findLastIndex(node => node.getAttribute('data-message-author-role') === 'user');
+    const responseStarted = lastUser >= 0 && messages.slice(lastUser + 1).some(node =>
+        node.getAttribute('data-message-author-role') === 'assistant'
+        && Boolean(node.getAttribute('data-message-id')) && read(node).length > 0);
     const controls = Array.from(document.querySelectorAll('button, [role="button"]')).filter(visible);
     const label = node => [node.getAttribute('aria-label') || '', node.getAttribute('title') || '',
         node.getAttribute('data-testid') || '', node.id || '', node.innerText || node.textContent || '']
         .join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
-    const stopVisible = controls.some(node => /\bstop\b|停止|中止|cancel generation|interrupt/.test(label(node)));
+    const stopVisible = controls.some(isGenerationStop);
+    const chromeUI = node => !node.closest('nav, aside, [role="navigation"], [data-message-author-role], [data-testid^="conversation-turn"], main article');
+    const notices = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [role="dialog"], [data-testid*="error"], #challenge-stage'))
+        .filter(node => visible(node) && chromeUI(node)).map(read).join(' ');
+    const archived = !composers.length && controls.some(node => chromeUI(node)
+        && /^(?:unarchive(?: conversation| chat)?|取消归档|取消封存|解除封存|アーカイブ解除)$/i.test(normalize(node.getAttribute('aria-label') || node.innerText || node.textContent)));
+    const blocker = /too many requests|rate limit|操作(?:过于|太)?频繁|请求过多|请求过于频繁/i.test(notices) ? 'rate_limited'
+        : /access denied|request blocked|访问被拒绝|拒绝访问/i.test(notices) ? 'access_denied'
+        : /verify (?:you are|you're) human|verifying you are human|确认您是真人|验证您是人类|验证您是否为人类/i.test(notices) ? 'verification_required'
+        : archived ? 'conversation_archived' : '';
     const safeSend = controls.filter(node => {
         const text = label(node);
         if (/\bstop\b|停止|中止|cancel|retry|signin|sign in|log in|login|voice|microphone|attach|upload/.test(text)) return false;
@@ -1293,9 +1644,13 @@ const INSPECT_SUBMISSION_SCRIPT: &str = r#"payload => {
             || node.getAttribute('type') === 'submit' || /\bsend\b|\bsubmit\b|发送|送信/.test(text);
     });
     return {
-        url: location.href || '', echo_found: echoFound, running: stopVisible, stop_visible: stopVisible,
+        url: location.href || '', echo_found: echoFound, running: stopVisible, stop_visible: stopVisible, page_blocker: blocker,
+        response_started: responseStarted,
         composer_exact: Boolean(markedText && markedText === expected),
-        composer_contains_prompt: composerTexts.some(containsPrompt), composer_chars: markedText.length,
+        composer_contains_prompt: composerTexts.some(containsPrompt),
+        // Before selecting an input, existing visible drafts still prevent a target switch.
+        composer_chars: marked ? markedText.length : Math.max(0, ...composerTexts.map(text => text.length)),
+        latest_turn_id: [...document.querySelectorAll('[data-testid^="conversation-turn"], main article')].at(-1)?.getAttribute('data-turn-id') || '',
         user_message_count: document.querySelectorAll('[data-message-author-role="user"]').length,
         send_enabled_count: safeSend.filter(node => !node.disabled
             && String(node.getAttribute('aria-disabled') || '').toLowerCase() !== 'true').length
@@ -1379,4 +1734,50 @@ const ATTACHMENT_STATUS_SCRIPT: &str = r#"payload => {
     return { ready: marked || ownedInput || ownedPreview || previewNodes.length > 0, marked, dispatched,
         owned_input: ownedInput, owned_preview: ownedPreview, file_count: fileCount,
         preview_count: previewNodes.length, image_preview_count: imagePreviews.length };
+}"#;
+
+const OBSERVE_STAGED_PROMPT_SCRIPT: &str = r#"payload => {
+    const input = document.querySelector('[data-cccc-web-model-composer="cccc-web-model-composer"]');
+    if (!input) return;
+    if (input.__ccccStagingObserver) {
+        input.removeEventListener('input', input.__ccccStagingObserver);
+        delete input.__ccccStagingObserver;
+    }
+    if (!payload.install) return;
+    const normalize = text => String(text).replace(/\s+/g, ' ').trim();
+    const observe = event => {
+        const text = input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement
+            ? input.value : (input.innerText || input.textContent || '');
+        if (event.isTrusted && event.inputType === 'insertText'
+            && normalize(text) === normalize(payload.prompt)) {
+            input.__ccccStagedPrompt = {deliveryId:payload.delivery_id, text};
+        }
+    };
+    input.__ccccStagingObserver = observe;
+    input.addEventListener('input', observe, {once:true});
+}"#;
+
+const CLEAR_STAGED_PROMPT_SCRIPT: &str = r#"payload => {
+    const input = document.querySelector('[data-cccc-web-model-composer="cccc-web-model-composer"]');
+    const owned = input?.__ccccStagedPrompt;
+    if (!owned || owned.deliveryId !== payload.delivery_id) return true;
+    const normalize = text => String(text).replace(/\s+/g, ' ').trim();
+    if (normalize(owned.text) !== normalize(payload.prompt)) return true;
+    const text = () => input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement
+        ? input.value : (input.innerText || input.textContent || '');
+    if (text() !== owned.text) return true;
+    input.focus();
+    if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
+        input.setSelectionRange(0, input.value.length);
+    } else {
+        const range = document.createRange();
+        range.selectNodeContents(input);
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }
+    document.execCommand('delete', false);
+    if (normalize(text()) !== '') return false;
+    delete input.__ccccStagedPrompt;
+    return true;
 }"#;
