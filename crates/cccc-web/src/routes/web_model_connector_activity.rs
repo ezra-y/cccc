@@ -20,16 +20,20 @@ pub(super) fn record(
     activity: Activity<'_>,
 ) -> Result<(), ApiError> {
     web_model_connector_store::update_connector(state, connector_id, |item| {
-        item["last_activity_at"] = json!(cccc_contracts::utc_now());
-        item["last_method"] = json!(activity.method);
-        item["last_tool_name"] = json!(activity.tool_name);
-        item["last_call_status"] = json!(activity.call_status);
-        item["last_wait_status"] = json!(activity.wait_status);
-        item["last_turn_id"] = json!(activity.turn_id);
-        item["last_error"] = json!(activity.error);
-        item["updated_at"] = json!(cccc_contracts::utc_now());
+        apply(item, &activity);
     })
     .map(|_| ())
+}
+
+pub(super) fn apply(item: &mut Value, activity: &Activity<'_>) {
+    item["last_activity_at"] = json!(cccc_contracts::utc_now());
+    item["last_method"] = json!(activity.method);
+    item["last_tool_name"] = json!(activity.tool_name);
+    item["last_call_status"] = json!(activity.call_status);
+    item["last_wait_status"] = json!(activity.wait_status);
+    item["last_turn_id"] = json!(activity.turn_id);
+    item["last_error"] = json!(activity.error);
+    item["updated_at"] = json!(cccc_contracts::utc_now());
 }
 
 pub(super) fn details(tool_name: &str, response: &Value) -> (String, String, String) {

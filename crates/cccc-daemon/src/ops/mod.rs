@@ -26,6 +26,7 @@ pub(crate) mod codex_voice_controller;
 pub(crate) mod codex_voice_lifecycle;
 mod context;
 mod context_projection;
+mod coordination_relay;
 mod deepseek_runtime;
 mod diagnostics;
 mod group_bridge;
@@ -72,6 +73,7 @@ mod terminal;
 mod terminal_history_source;
 mod terminal_text;
 mod voice_notifications;
+mod web_model_chat_onboarding;
 mod working_state;
 #[cfg(test)]
 mod working_state_tests;
@@ -83,6 +85,8 @@ use operation::Operation;
 
 pub(crate) fn resolve_operation(request: &DaemonRequest) -> Option<Operation> {
     for resolver in [
+        coordination_relay::resolve_operation,
+        web_model_chat_onboarding::resolve_operation,
         group_creation::resolve_operation,
         groups::resolve_operation,
         hermes_runtime::resolve_operation,

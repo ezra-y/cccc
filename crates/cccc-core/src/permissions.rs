@@ -29,7 +29,11 @@ pub fn require_actor(
         (Some(_), ActorAction::List) => Ok(()),
         (
             Some(ActorRole::Foreman),
-            ActorAction::Add | ActorAction::Start | ActorAction::Stop | ActorAction::Restart,
+            ActorAction::Add
+            | ActorAction::Start
+            | ActorAction::Stop
+            | ActorAction::Restart
+            | ActorAction::Update,
         ) => Ok(()),
         (Some(ActorRole::Foreman), ActorAction::Remove)
             if target == who || effective_role(group, target) == Some(ActorRole::Peer) =>

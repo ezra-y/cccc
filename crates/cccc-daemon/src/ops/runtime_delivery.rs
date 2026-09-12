@@ -145,7 +145,7 @@ pub fn claim_deliveries(
     with_exclusive_lock(&lock_path, || {
         let (claimable, mut states) = ledger::inspect(&ledger_path, |events, _| {
             let mut states = HashMap::new();
-            for (actor, _transport) in deliveries {
+            for (actor, transport) in deliveries {
                 let state = events
                     .iter()
                     .rev()
@@ -167,14 +167,45 @@ pub fn claim_deliveries(
                     .unwrap_or_default();
                 states.insert(actor.id.clone(), state.clone());
                 if state == "claimed" {
-                    return (false, states);
+                    return Ok((false, states));
                 }
-                if state == "accepted" || (state == "ambiguous" && !force_ambiguous) {
-                    return (false, states);
+                let wrong_target = if state == "accepted"
+                    && force_ambiguous
+                    && *transport == "web_model_browser"
+                {
+                    let target = cccc_core::web_model_connectors::browser_target(
+                        home,
+                        &group.group_id,
+                        &actor.id,
+                    )?;
+                    let normalized =
+                        cccc_core::web_model_connectors::normalized_chatgpt_conversation_url;
+                    let expected = target["url"].as_str().and_then(normalized);
+                    let proof = &target["last_submission_evidence"];
+                    // Explicit repair of an old false receipt: both native snapshots
+                    // show another page. A normal confirmed receipt remains terminal.
+                    target["kind"] == "existing_chat"
+                        && expected.is_some()
+                        && target["last_delivery_event_ids"]
+                            .as_array()
+                            .is_some_and(|ids| ids.iter().any(|id| id == source_event_id))
+                        && proof["baseline"]["url"]
+                            .as_str()
+                            .is_some_and(|url| normalized(url) != expected)
+                        && proof["observed"]["url"]
+                            .as_str()
+                            .is_some_and(|url| normalized(url) != expected)
+                } else {
+                    false
+                };
+                if (state == "accepted" && !wrong_target)
+                    || (state == "ambiguous" && !force_ambiguous)
+                {
+                    return Ok((false, states));
                 }
             }
-            (true, states)
-        })?;
+            Ok::<_, std::io::Error>((true, states))
+        })??;
         if !claimable {
             return Ok((false, states));
         }
@@ -260,6 +291,15 @@ pub fn settle_stranded_claims(home: &HomeLayout, group: &GroupDoc) -> Result<usi
             if state != "claimed" {
                 continue;
             }
+            let target = if transport == "web_model_browser" {
+                cccc_core::web_model_connectors::browser_target(home, &group.group_id, &actor.id)?
+            } else {
+                Value::Null
+            };
+            let preparing = target["last_delivery_status"] == "preparing"
+                && target["last_delivery_event_ids"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == &source_event_id));
             append_state(
                 home,
                 &group.group_id,
@@ -267,9 +307,15 @@ pub fn settle_stranded_claims(home: &HomeLayout, group: &GroupDoc) -> Result<usi
                 &actor.created_at,
                 &source_event_id,
                 &transport,
-                DeliveryOutcome::Ambiguous(
-                    "daemon restarted before the claimed handoff recorded an outcome",
-                ),
+                if preparing {
+                    DeliveryOutcome::Failed(
+                        "daemon restarted during browser preparation before Send",
+                    )
+                } else {
+                    DeliveryOutcome::Ambiguous(
+                        "daemon restarted before the claimed handoff recorded an outcome",
+                    )
+                },
             )
             .map_err(|error| std::io::Error::other(error.message))?;
             settled += 1;
@@ -340,7 +386,8 @@ pub fn pending_sources(
                     .get("message_mode")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                (matches!(mode, "send" | "request_reply") || (mode == "mail" && state == "claimed"))
+                (matches!(mode, "send" | "request_reply")
+                    || (mode == "mail" && matches!(state, "claimed" | "failed")))
                     && inbox::is_for_actor(group, event, &actor.id)
             } else if event.kind == "system.notify" {
                 if legacy_read_watermark.covers_notification(event) {
@@ -382,79 +429,83 @@ mod tests {
 
     #[test]
     fn concurrent_claims_are_unique_and_restart_settles_the_stranded_claim() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
-        let store = GroupStore::new(home.clone()).expect("store");
-        let mut group = store.create("runtime delivery", "").expect("group");
-        let actor = Actor::new("peer1");
-        group.actors.push(actor.clone());
-        store.save(&group).expect("save actor");
+        for contenders in [2, 4, 6, 10] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+            let store = GroupStore::new(home.clone()).expect("store");
+            let mut group = store.create("runtime delivery", "").expect("group");
+            let actor = Actor::new("peer1");
+            group.actors.push(actor.clone());
+            store.save(&group).expect("save actor");
 
-        let barrier = Arc::new(Barrier::new(2));
-        let results = std::thread::scope(|scope| {
-            let mut handles = Vec::new();
-            for _ in 0..2 {
-                let barrier = barrier.clone();
-                let home = &home;
-                let group = &group;
-                let actor = &actor;
-                handles.push(scope.spawn(move || {
-                    barrier.wait();
-                    claim(home, group, actor, "source-1", "pty", false).expect("claim")
-                }));
-            }
-            handles
+            let barrier = Arc::new(Barrier::new(contenders));
+            let results = std::thread::scope(|scope| {
+                let mut handles = Vec::new();
+                for _ in 0..contenders {
+                    let barrier = barrier.clone();
+                    let home = &home;
+                    let group = &group;
+                    let actor = &actor;
+                    handles.push(scope.spawn(move || {
+                        barrier.wait();
+                        claim(home, group, actor, "source-1", "pty", false).expect("claim")
+                    }));
+                }
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().expect("claim thread"))
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(
+                results
+                    .iter()
+                    .filter(|result| **result == ClaimResult::Claimed)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                results
+                    .iter()
+                    .filter(|result| **result == ClaimResult::Terminal("claimed".into()))
+                    .count(),
+                contenders - 1
+            );
+
+            let ledger_path = store.ledger_path(&group.group_id).expect("ledger path");
+            let states = ledger::read_all(&ledger_path)
+                .expect("ledger")
                 .into_iter()
-                .map(|handle| handle.join().expect("claim thread"))
-                .collect::<Vec<_>>()
-        });
-        assert_eq!(
-            results
-                .iter()
-                .filter(|result| **result == ClaimResult::Claimed)
-                .count(),
-            1
-        );
-        assert_eq!(
-            results
-                .iter()
-                .filter(|result| **result == ClaimResult::Terminal("claimed".into()))
-                .count(),
-            1
-        );
+                .filter(|event| event.kind == "runtime.delivery")
+                .map(|event| {
+                    event
+                        .data
+                        .get("state")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(states, ["claimed"]);
 
-        let ledger_path = store.ledger_path(&group.group_id).expect("ledger path");
-        let states = ledger::read_all(&ledger_path)
-            .expect("ledger")
-            .into_iter()
-            .filter(|event| event.kind == "runtime.delivery")
-            .map(|event| {
-                event
-                    .data
-                    .get("state")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(states, ["claimed"]);
+            assert_eq!(settle_stranded_claims(&home, &group).expect("settle"), 1);
+            assert_eq!(
+                latest_state(&home, &group.group_id, &actor.id, "source-1")
+                    .expect("latest")
+                    .expect("state")
+                    .0,
+                "ambiguous"
+            );
+            assert_eq!(
+                claim(&home, &group, &actor, "source-1", "pty", false).expect("blocked retry"),
+                ClaimResult::Terminal("ambiguous".into())
+            );
+            assert_eq!(
+                claim(&home, &group, &actor, "source-1", "pty", true).expect("forced retry"),
+                ClaimResult::Claimed
+            );
 
-        assert_eq!(settle_stranded_claims(&home, &group).expect("settle"), 1);
-        assert_eq!(
-            latest_state(&home, &group.group_id, &actor.id, "source-1")
-                .expect("latest")
-                .expect("state")
-                .0,
-            "ambiguous"
-        );
-        assert_eq!(
-            claim(&home, &group, &actor, "source-1", "pty", false).expect("blocked retry"),
-            ClaimResult::Terminal("ambiguous".into())
-        );
-        assert_eq!(
-            claim(&home, &group, &actor, "source-1", "pty", true).expect("forced retry"),
-            ClaimResult::Claimed
-        );
+            eprintln!("CLAIM_RACE contenders={contenders} winners=1 restart_ambiguous=PASS");
+        }
     }
 
     #[test]
@@ -562,5 +613,103 @@ mod tests {
             latest_state(&home, &group.group_id, "peer1", "source-1").expect("first state"),
             None
         );
+    }
+
+    #[test]
+    fn restart_preserves_preparing_sources_but_not_attempted_sends() {
+        for phase in ["preparing", "submitting"] {
+            let temp = tempfile::tempdir().expect("temp");
+            let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+            let store = GroupStore::new(home.clone()).expect("store");
+            let mut group = store.create("restart phase", "").expect("group");
+            let mut actor = Actor::new("web");
+            actor.runtime = cccc_contracts::ActorRuntime::WebModel;
+            group.actors.push(actor.clone());
+            store.save(&group).expect("actor");
+            cccc_core::web_model_connectors::save_browser_target(
+                &home,
+                &group.group_id,
+                "web",
+                Some(json!({
+                "last_delivery_status":phase,"last_delivery_event_ids":["source-1"]})),
+            )
+            .expect("phase");
+            for id in ["source-1", "unrelated-source"] {
+                assert_eq!(
+                    claim(&home, &group, &actor, id, "web_model_browser", false).expect("claim"),
+                    ClaimResult::Claimed
+                );
+            }
+            assert_eq!(settle_stranded_claims(&home, &group).expect("restart"), 2);
+            assert_eq!(
+                latest_state(&home, &group.group_id, "web", "source-1")
+                    .expect("state")
+                    .expect("source")
+                    .0,
+                if phase == "preparing" {
+                    "failed"
+                } else {
+                    "ambiguous"
+                }
+            );
+            assert_eq!(
+                latest_state(&home, &group.group_id, "web", "unrelated-source")
+                    .expect("state")
+                    .expect("source")
+                    .0,
+                "ambiguous"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_retry_repairs_only_a_proven_wrong_chat_receipt() {
+        let temp = tempfile::tempdir().expect("temp");
+        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+        let store = GroupStore::new(home.clone()).expect("store");
+        let mut group = store.create("receipt target", "").expect("group");
+        let mut actor = Actor::new("web");
+        actor.runtime = cccc_contracts::ActorRuntime::WebModel;
+        group.actors.push(actor.clone());
+        store.save(&group).expect("save");
+        let expected = "https://chatgpt.com/c/original";
+        for (baseline, observed, allowed) in [
+            (expected, expected, false),
+            (expected, "https://chatgpt.com/", false),
+            (
+                "https://chatgpt.com/",
+                "https://chatgpt.com/c/WEB:wrong",
+                true,
+            ),
+        ] {
+            cccc_core::web_model_connectors::save_browser_target(&home,&group.group_id,"web",Some(json!({
+                "kind":"existing_chat","url":expected,"last_delivery_event_ids":["report"],
+                "last_submission_evidence":{"baseline":{"url":baseline},"observed":{"url":observed}}}))).expect("proof");
+            append_state(
+                &home,
+                &group.group_id,
+                &actor.id,
+                &actor.created_at,
+                "report",
+                "web_model_browser",
+                DeliveryOutcome::Accepted,
+            )
+            .expect("old receipt");
+            assert_eq!(
+                claim(&home, &group, &actor, "report", "web_model_browser", false)
+                    .expect("normal retry"),
+                ClaimResult::Terminal("accepted".into())
+            );
+            let result = claim(&home, &group, &actor, "report", "web_model_browser", true)
+                .expect("explicit retry");
+            assert_eq!(
+                result,
+                if allowed {
+                    ClaimResult::Claimed
+                } else {
+                    ClaimResult::Terminal("accepted".into())
+                }
+            );
+        }
     }
 }

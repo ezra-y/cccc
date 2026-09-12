@@ -39,7 +39,7 @@ pub(crate) fn spawn(state: AppState) {
     });
 }
 
-async fn ensure_running_actor(
+pub(super) async fn ensure_running_actor(
     state: &AppState,
     preferred_group: Option<&str>,
     event_trigger: bool,
@@ -50,10 +50,25 @@ async fn ensure_running_actor(
 }
 
 async fn ensure_actor(state: &AppState, group_id: String, actor_id: String, event_trigger: bool) {
+    if super::web_model_browser::automation_hold(&state.home).is_some() {
+        return;
+    }
+    // Chat-first groups can dispatch locally before providing a return URL.
+    // Do not launch a browser or ask for sign-in until a return target is configured.
+    let Ok(target) = super::web_model_delivery_state::target(state, &group_id, &actor_id) else {
+        return;
+    };
+    if target["kind"] != "new_chat" && target["url"].as_str().is_none_or(str::is_empty) {
+        return;
+    }
     let session_key = super::web_model_browser::key(&group_id, &actor_id);
-    let surface = state.browser_surfaces.info(&session_key).await;
+    let surface = state
+        .browser_surfaces
+        .info(super::web_model_browser::surface_key())
+        .await;
     if surface["active"].as_bool().unwrap_or(false) {
-        if event_trigger {
+        ensure_relay_decision_reminder(state, &group_id, &actor_id).await;
+        if should_start_delivery_worker(event_trigger, &target) {
             super::web_model_delivery::ensure_worker(
                 state.clone(),
                 group_id.clone(),
@@ -77,11 +92,31 @@ async fn ensure_actor(state: &AppState, group_id: String, actor_id: String, even
     {
         Ok(_) => {
             clear_warmup_attempt(&session_key);
+            ensure_relay_decision_reminder(state, &group_id, &actor_id).await;
             super::web_model_delivery::ensure_worker(state.clone(), group_id, actor_id).await;
         }
         Err(error) => {
             tracing::warn!(%error, group_id, actor_id, "Web-model browser warmup failed");
         }
+    }
+}
+
+async fn ensure_relay_decision_reminder(state: &AppState, group_id: &str, actor_id: &str) {
+    let browser_idle = {
+        let _operation = state.browser_surfaces.web_model_operation.lock().await;
+        state
+            .browser_surfaces
+            .relay_surface_idle(super::web_model_browser::surface_key())
+            .await
+            .unwrap_or(false)
+    };
+    let mut args = super::web_model_delivery_completion::args(group_id, actor_id);
+    args.insert("by".into(), serde_json::json!(actor_id));
+    args.insert("browser_idle".into(), serde_json::json!(browser_idle));
+    if let Err(error) =
+        super::web_model_delivery_completion::call(state, "coordination_relay_remind", args).await
+    {
+        tracing::warn!(%error, group_id, actor_id, "relay decision reminder check failed");
     }
 }
 
@@ -200,6 +235,14 @@ fn group_state_allows_delivery(running: bool, state: GroupState) -> bool {
     running && !matches!(state, GroupState::Paused | GroupState::Stopped)
 }
 
+fn should_start_delivery_worker(event_trigger: bool, target: &serde_json::Value) -> bool {
+    event_trigger
+        || (target["last_delivery_status"] == "deferred"
+            && super::web_model_delivery::retryable_pre_send_deferral(
+                &target["last_submission_evidence"],
+            ))
+}
+
 fn normalize(value: impl AsRef<str>) -> String {
     value.as_ref().trim().to_ascii_lowercase()
 }
@@ -228,4 +271,42 @@ fn clear_warmup_attempt(key: &str) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .remove(key);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_start_delivery_worker;
+    use serde_json::json;
+
+    #[test]
+    fn periodic_tick_rearms_a_safely_deferred_browser_delivery() {
+        for evidence in [
+            "not_sent_chat_busy",
+            "not_sent_composer_occupied",
+            "not_sent_composer_unavailable",
+        ] {
+            let target = json!({
+                "last_delivery_status":"deferred",
+                "last_submission_evidence":{"submission_evidence":evidence}
+            });
+            assert!(
+                should_start_delivery_worker(false, &target),
+                "periodic tick did not re-arm {evidence}"
+            );
+        }
+    }
+
+    #[test]
+    fn periodic_tick_does_not_restart_permanent_or_uncertain_deliveries() {
+        for target in [
+            json!({}),
+            json!({"last_delivery_status":"handled"}),
+            json!({"last_delivery_status":"submission_ambiguous"}),
+            json!({"last_delivery_status":"deferred","last_submission_evidence":{"submission_evidence":"not_sent_login_required"}}),
+            json!({"last_delivery_status":"failed","last_submission_evidence":{"submission_evidence":"bound_conversation_unavailable"}}),
+        ] {
+            assert!(!should_start_delivery_worker(false, &target));
+        }
+        assert!(should_start_delivery_worker(true, &json!({})));
+    }
 }

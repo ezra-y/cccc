@@ -258,6 +258,36 @@ mod tests {
     }
 
     #[test]
+    fn chat_onboarding_and_relay_operations_keep_write_policies() {
+        for op in ["web_model_chat_create", "web_model_chat_bind"] {
+            let request = request(op, json!({"group_id":"g_one"}));
+            assert!(
+                crate::dispatch::resolve_operation(&request).is_some(),
+                "{op} must resolve"
+            );
+            assert!(
+                matches!(access(&request), Access::GlobalWrite),
+                "{op} must serialize provisioning globally"
+            );
+        }
+        for op in [
+            "coordination_decide",
+            "coordination_relay_status",
+            "coordination_relay_remind",
+        ] {
+            let request = request(op, json!({"group_id":"g_one"}));
+            assert!(
+                crate::dispatch::resolve_operation(&request).is_some(),
+                "{op} must resolve"
+            );
+            assert!(
+                matches!(access(&request), Access::GroupWrite(group_id) if group_id == "g_one"),
+                "{op} can persist relay state"
+            );
+        }
+    }
+
+    #[test]
     fn profile_secret_key_aliases_share_the_read_policy() {
         for op in [
             "actor_profile_env_private_keys",

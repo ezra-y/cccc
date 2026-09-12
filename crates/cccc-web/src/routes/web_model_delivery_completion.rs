@@ -1,4 +1,5 @@
 use cccc_contracts::DaemonRequest;
+use cccc_core::web_model_connectors::BrowserTargetOwner;
 use serde_json::{Map, Value, json};
 
 use crate::AppState;
@@ -48,6 +49,7 @@ pub(super) async fn reconcile(
     state: &AppState,
     group_id: &str,
     actor_id: &str,
+    owner: &BrowserTargetOwner,
     target: &Value,
 ) -> Result<bool, ApiError> {
     let Some(evidence) = Evidence::from_target(target) else {
@@ -93,7 +95,7 @@ pub(super) async fn reconcile(
             "auto_bind_new_chat":pending_new_chat_bind
         }),
     )
-    .await;
+    .await?;
     match raw_call(state, "runtime_complete_turn", request).await {
         Ok(_) => {
             if pending_new_chat_bind && !submission_ambiguous {
@@ -112,7 +114,7 @@ pub(super) async fn reconcile(
                         "auto_bind_new_chat":true
                     }),
                 )
-                .await;
+                .await?;
             }
             let final_status = if submission_ambiguous {
                 "submission_ambiguous"
@@ -132,6 +134,7 @@ pub(super) async fn reconcile(
                 state,
                 group_id,
                 actor_id,
+                owner,
                 json!({
                     "last_delivery_status":final_status,
                     "last_delivery_reconciled_at":cccc_contracts::utc_now(),
@@ -142,6 +145,7 @@ pub(super) async fn reconcile(
                 state,
                 group_id,
                 actor_id,
+                owner,
                 if submission_ambiguous {
                     "ambiguous"
                 } else {
@@ -161,6 +165,7 @@ pub(super) async fn reconcile(
                 state,
                 group_id,
                 actor_id,
+                owner,
                 json!({
                     "last_delivery_status":if conflict {
                         "completion_conflict"
@@ -178,6 +183,7 @@ pub(super) async fn reconcile(
                     state,
                     group_id,
                     actor_id,
+                    owner,
                     "failed",
                     &evidence.turn_id,
                     &error.api.to_string(),
@@ -199,7 +205,7 @@ pub(super) async fn record_delivery(
     delivery_state: &str,
     detail: &str,
     metadata: Value,
-) {
+) -> Result<(), ApiError> {
     let mut browser_delivery = json!({
         "state":delivery_state,
         "detail":detail,
@@ -230,7 +236,8 @@ pub(super) async fn record_delivery(
     .as_object()
     .cloned()
     .expect("browser delivery request");
-    if let Err(error) = call(state, "web_model_browser_delivery_record", request).await {
+    let result = call(state, "web_model_browser_delivery_record", request).await;
+    if let Err(error) = &result {
         tracing::warn!(
             group_id,
             actor_id,
@@ -241,6 +248,7 @@ pub(super) async fn record_delivery(
             "Failed to record Web Model browser delivery status"
         );
     }
+    result.map(|_| ())
 }
 
 struct Evidence {
