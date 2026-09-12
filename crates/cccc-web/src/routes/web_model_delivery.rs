@@ -160,14 +160,10 @@ async fn visit_pending(
             let has_draft = blocked
                 .as_ref()
                 .is_some_and(|b| b["composer_chars"].as_u64().unwrap_or(0) > 0);
+            // Close only after the receipt transaction above has settled, not
+            // merely because a second page inspection looks different.
             pending_receipt = target["last_submission_evidence"]["submission_evidence"]
-                == "optimistic_echo_unconfirmed"
-                && blocked.as_ref().is_some_and(|b| {
-                    b["latest_turn_id"]
-                        .as_str()
-                        .is_some_and(|id| id.starts_with("request-"))
-                        && b["response_started"] != true
-                });
+                == "optimistic_echo_unconfirmed";
             // An optimistic bubble is still an in-flight Send, not idle time.
             if !has_draft && !pending_receipt {
                 state
