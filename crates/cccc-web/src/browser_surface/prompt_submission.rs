@@ -64,6 +64,7 @@ pub(super) struct SubmissionSnapshot {
     composer_contains_prompt: bool,
     pub(super) composer_chars: usize,
     pub(super) latest_turn_id: String,
+    response_started: bool,
     pub(super) page_blocker: String,
     user_message_count: usize,
     send_enabled_count: usize,
@@ -1161,11 +1162,11 @@ pub(super) async fn inspect_submission(
     .context("decode browser prompt submission state")
 }
 
-// ChatGPT renders a request-* turn before the server has admitted the message.
-// Its immediate optimistic echo must not release the sending browser or settle
-// the original report as accepted. Reuse the normal bounded evidence wait.
+// A request-* container can outlive its optimistic placeholder. A real
+// assistant message after the latest user message also proves reception;
+// neither an earlier answer nor the empty placeholder does.
 fn provisional_submission(snapshot: &SubmissionSnapshot) -> bool {
-    snapshot.latest_turn_id.starts_with("request-")
+    snapshot.latest_turn_id.starts_with("request-") && !snapshot.response_started
 }
 
 fn weak_submission_evidence(
@@ -1616,6 +1617,11 @@ const INSPECT_SUBMISSION_SCRIPT: &str = r#"(payload, isGenerationStop) => {
         const text = read(node);
         return needles.some(needle => text.includes(needle));
     });
+    const messages = Array.from(document.querySelectorAll('[data-message-author-role]'));
+    const lastUser = messages.findLastIndex(node => node.getAttribute('data-message-author-role') === 'user');
+    const responseStarted = lastUser >= 0 && messages.slice(lastUser + 1).some(node =>
+        node.getAttribute('data-message-author-role') === 'assistant'
+        && Boolean(node.getAttribute('data-message-id')) && read(node).length > 0);
     const controls = Array.from(document.querySelectorAll('button, [role="button"]')).filter(visible);
     const label = node => [node.getAttribute('aria-label') || '', node.getAttribute('title') || '',
         node.getAttribute('data-testid') || '', node.id || '', node.innerText || node.textContent || '']
@@ -1639,6 +1645,7 @@ const INSPECT_SUBMISSION_SCRIPT: &str = r#"(payload, isGenerationStop) => {
     });
     return {
         url: location.href || '', echo_found: echoFound, running: stopVisible, stop_visible: stopVisible, page_blocker: blocker,
+        response_started: responseStarted,
         composer_exact: Boolean(markedText && markedText === expected),
         composer_contains_prompt: composerTexts.some(containsPrompt),
         // Before selecting an input, existing visible drafts still prevent a target switch.

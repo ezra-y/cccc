@@ -166,6 +166,7 @@ async fn visit_pending(
                     b["latest_turn_id"]
                         .as_str()
                         .is_some_and(|id| id.starts_with("request-"))
+                        && b["response_started"] != true
                 });
             // An optimistic bubble is still an in-flight Send, not idle time.
             if !has_draft && !pending_receipt {
@@ -1104,10 +1105,11 @@ async fn recover_verified_ambiguous_submission(
     owner: &BrowserTargetOwner,
     target: &Value,
 ) -> Result<bool, ApiError> {
-    let submission = &target["last_submission_evidence"];
-    let Some(submission_evidence) = stored_verified_submission_evidence(submission) else {
+    let mut submission = target["last_submission_evidence"].clone();
+    let provisional = submission["submission_evidence"] == "optimistic_echo_unconfirmed";
+    if stored_verified_submission_evidence(&submission).is_none() && !provisional {
         return Ok(false);
-    };
+    }
     let turn_id = required(target, "last_delivery_turn_id")?;
     let delivery_id = required(target, "last_delivery_id")?;
     let mut recover_args = args(group_id, actor_id);
@@ -1118,8 +1120,6 @@ async fn recover_verified_ambiguous_submission(
     let recovered = daemon_call(state, "web_model_runtime_recover_turn", recover_args).await?;
     let turn = &recovered["turn"];
     let target_url = target["url"].as_str().unwrap_or("");
-    let observed_url = submission["observed"]["url"].as_str().unwrap_or("");
-    let conversation_url = conversation_url_for_target(target_url, observed_url);
     let event_label = target["last_delivery_event_ids"]
         .as_array()
         .into_iter()
@@ -1127,7 +1127,7 @@ async fn recover_verified_ambiguous_submission(
         .filter_map(Value::as_str)
         .collect::<Vec<_>>()
         .join(",");
-    let (_, bootstrap_seed) = build_browser_prompt(
+    let (prompt, bootstrap_seed) = build_browser_prompt(
         turn,
         target,
         target_url,
@@ -1135,6 +1135,28 @@ async fn recover_verified_ambiguous_submission(
         delivery_id,
         &event_label,
     )?;
+    if provisional {
+        // Reinspect only the already-open sending page. Never reopen or send
+        // merely to resolve an uncertain receipt, and never borrow another chat.
+        let surface = state.browser_surfaces.info(surface_key()).await;
+        if surface["active"] != true || surface["url"] != target["url"] {
+            return Ok(false);
+        }
+        let current = state
+            .browser_surfaces
+            .inspect_staged_prompt(surface_key(), target_url, &prompt)
+            .await
+            .map_err(|error| ApiError::bad(error.to_string()))?;
+        if current["observed"]["echo_found"] != true {
+            return Ok(false);
+        }
+        submission["observed"] = current["observed"].clone();
+    }
+    let Some(submission_evidence) = stored_verified_submission_evidence(&submission) else {
+        return Ok(false);
+    };
+    let observed_url = submission["observed"]["url"].as_str().unwrap_or("");
+    let conversation_url = conversation_url_for_target(target_url, observed_url);
     if let Some(seed) = &bootstrap_seed {
         mark_bootstrap_seed_delivered(
             state,
@@ -1169,6 +1191,18 @@ async fn recover_verified_ambiguous_submission(
             "last_error":if pending_new_chat_bind {"conversation_url_pending"} else {""}
         }),
     )?;
+    record_delivery(
+        state,
+        group_id,
+        actor_id,
+        turn_id,
+        target["last_delivery_event_ids"].clone(),
+        delivery_id,
+        "submitted",
+        submission_evidence,
+        json!({"target_url":target_url,"recovered_from":"submission_ambiguous"}),
+    )
+    .await?;
     record_connector(state, group_id, actor_id, owner, "submitted", turn_id, "")?;
     tracing::info!(
         group_id,
@@ -2809,6 +2843,57 @@ mod retry_integration_tests {
             assert_eq!(
                 load_target(&state, gid, "web").expect("target")["last_delivery_status"],
                 "submission_ambiguous"
+            );
+            page.evaluate(r#"document.querySelector('[data-testid=send-button]').onclick=()=>{sends++;const t=document.querySelector('textarea');const s=document.createElement('section');s.dataset.testid='conversation-turn-pending';s.dataset.turnId='request-still-present';const n=document.createElement('div');n.dataset.messageAuthorRole='user';n.textContent=t.value;s.append(n);document.body.append(s);t.value=''}"#)
+                .await.expect("late server receipt fixture");
+            let late = call(
+                "send",
+                json!({"group_id":gid,"by":"user","to":["web"],
+                "text":"LATE_SERVER_RECEIPT","message_mode":"send"}),
+            )
+            .await
+            .expect("late report");
+            assert!(matches!(
+                deliver_pending(&state, gid, "web")
+                    .await
+                    .expect("provisional send"),
+                DeliveryOutcome::Ambiguous
+            ));
+            assert!(matches!(
+                deliver_pending(&state, gid, "web")
+                    .await
+                    .expect("still unconfirmed"),
+                DeliveryOutcome::Idle
+            ));
+            page.evaluate(r#"const answer=document.createElement('div');answer.dataset.messageAuthorRole='assistant';answer.dataset.messageId='server-late-answer';answer.textContent='Received';document.querySelector('[data-turn-id=request-still-present]').append(answer)"#)
+                .await.expect("server responds without changing the container id");
+            assert!(matches!(
+                deliver_pending(&state, gid, "web")
+                    .await
+                    .expect("late receipt"),
+                DeliveryOutcome::Submitted
+            ));
+            let _ = deliver_pending(&state, gid, "web")
+                .await
+                .expect("duplicate receipt check");
+            assert_eq!(
+                page.evaluate("globalThis.sends")
+                    .await
+                    .expect("count")
+                    .into_value::<u64>()
+                    .expect("number"),
+                4
+            );
+            let events = ledger::read_all(&ledger_path).expect("late receipt ledger");
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e.kind == "runtime.delivery"
+                        && e.data["source_event_id"] == late["event"]["id"]
+                        && e.data["state"] == "accepted")
+                    .count(),
+                1,
+                "late verified receipt must settle the original source exactly once"
             );
         };
         let caught = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(timeout(

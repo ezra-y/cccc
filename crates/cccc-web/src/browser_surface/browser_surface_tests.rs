@@ -849,7 +849,7 @@ async fn cross_chat_delivery_does_not_navigate_away_from_a_draft() {
 #[tokio::test]
 async fn submission_does_not_wait_for_background_intersection_observers() {
     require_chrome!();
-    let (url,server)=local_page(r#"<!doctype html><html><body><form onsubmit="event.preventDefault();window.sent=(window.sent||0)+1;const turn=document.createElement('section');turn.dataset.testid='conversation-turn-1';turn.dataset.turnId='request-client-0';const e=document.createElement('div');e.dataset.messageAuthorRole='user';e.textContent=document.querySelector('textarea').value;turn.append(e);document.body.append(turn);document.querySelector('textarea').value='';setTimeout(()=>{turn.dataset.turnId='server-turn';window.accepted=true},600)"><textarea id="prompt-textarea" style="width:500px;height:100px"></textarea><button id="composer-submit-button" type="submit" aria-label="Send prompt">Send</button></form></body></html>"#).await;
+    let (url,server)=local_page(r#"<!doctype html><html><body><form onsubmit="event.preventDefault();window.sent=(window.sent||0)+1;const turn=document.createElement('section');turn.dataset.testid='conversation-turn-1';turn.dataset.turnId='request-client-0';const e=document.createElement('div');e.dataset.messageAuthorRole='user';e.textContent=document.querySelector('textarea').value;turn.append(e);document.body.append(turn);document.querySelector('textarea').value='';setTimeout(()=>{const answer=document.createElement('div');answer.dataset.messageAuthorRole='assistant';answer.dataset.messageId='server-answer';answer.textContent='Received';turn.append(answer);window.accepted=true},600)"><textarea id="prompt-textarea" style="width:500px;height:100px"></textarea><button id="composer-submit-button" type="submit" aria-label="Send prompt">Send</button></form></body></html>"#).await;
     let temp = tempfile::tempdir().expect("tempdir");
     let manager = BrowserSurfaces::default();
     manager
@@ -919,7 +919,7 @@ async fn submission_does_not_wait_for_background_intersection_observers() {
         None
     };
     page.evaluate(
-        "document.querySelector('[data-turn-id]').dataset.turnId='request-client-pending'",
+        "document.querySelector('[data-turn-id]').dataset.turnId='request-client-pending'; const old=document.querySelector('[data-message-author-role=assistant]'); document.body.prepend(old)",
     )
     .await
     .expect("provisional duplicate fixture");
@@ -962,6 +962,10 @@ async fn submission_does_not_wait_for_background_intersection_observers() {
         "baseline":{"user_message_count":0},
         "observed":{"user_message_count":1,"echo_found":true,"latest_turn_id":"request-client-pending"}
     })).is_none(), "persisted optimistic evidence was promoted to accepted");
+    assert!(prompt_submission::stored_verified_submission_evidence(&json!({
+        "baseline":{"user_message_count":0},
+        "observed":{"user_message_count":1,"echo_found":true,"latest_turn_id":"request-client-pending","response_started":true}
+    })).is_some(), "a server response was ignored because its container kept a provisional id");
     assert_eq!(count, 1);
     assert!(matches!(
         repeated,
