@@ -767,11 +767,11 @@ fn fake_acp_without_user_echo(root: &Path, response_before_output: bool) -> Path
     });
     std::fs::create_dir(&directory).expect("fake ACP directory");
     let path = directory.join("fake-acp");
+    // Preserve wire ordering in one write: the late chunk follows the response,
+    // without racing an OS sleep against the protocol's quiet-period deadline.
     let prompt = if response_before_output {
         format!(
-            r#"printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}'
-sleep 0.05
-printf '%s\n' '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"{FAKE_SESSION_ID}","update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"late result"}}}}}}}}'"#
+            r#"printf '%s\n%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}' '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"{FAKE_SESSION_ID}","update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"late result"}}}}}}}}'"#
         )
     } else {
         format!(
