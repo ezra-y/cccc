@@ -520,8 +520,9 @@ fn status_locked(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
         .ledger_path(&group_id)
         .map_err(OpError::io)?;
     let mut events = ledger::read_all(&path).map_err(OpError::io)?;
-    reconcile_recorded_decisions(home, &group, &events)?;
-    events = ledger::read_all(&path).map_err(OpError::io)?;
+    if reconcile_recorded_decisions(home, &group, &events)? {
+        events = ledger::read_all(&path).map_err(OpError::io)?;
+    }
     reconcile_escalated_handoffs(home, &group, &events)?;
     let pending = unresolved_handoffs(&events, &actor_id)
         .into_iter()
@@ -630,8 +631,9 @@ fn remind_due_locked(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
     let store = GroupStore::new(home.clone()).map_err(OpError::io)?;
     let path = store.ledger_path(&group_id).map_err(OpError::io)?;
     let mut events = ledger::read_all(&path).map_err(OpError::io)?;
-    reconcile_recorded_decisions(home, &group, &events)?;
-    events = ledger::read_all(&path).map_err(OpError::io)?;
+    if reconcile_recorded_decisions(home, &group, &events)? {
+        events = ledger::read_all(&path).map_err(OpError::io)?;
+    }
     reconcile_escalated_handoffs(home, &group, &events)?;
     let now = Utc::now();
     let mut reminders = Vec::new();
@@ -1067,7 +1069,8 @@ fn reconcile_recorded_decisions(
     home: &HomeLayout,
     group: &GroupDoc,
     events: &[Event],
-) -> Result<(), OpError> {
+) -> Result<bool, OpError> {
+    let mut changed = false;
     for decision in events.iter().filter(|event| event.kind == DECISION_KIND) {
         let actor_id = decision
             .data
@@ -1102,8 +1105,9 @@ fn reconcile_recorded_decisions(
             &handoff_ids,
             decision_id,
         )?;
+        changed = true;
     }
-    Ok(())
+    Ok(changed)
 }
 
 fn handled_source_ids(
