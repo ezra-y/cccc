@@ -2061,10 +2061,6 @@ fn source_task_ids(
             referenced.extend(task_ids_from_events(std::slice::from_ref(parent)));
         }
     }
-    let report_at = sources
-        .iter()
-        .filter_map(|event| DateTime::parse_from_rfc3339(&event.ts).ok())
-        .min();
     if let Some(task_id) = string_arg(request, "task_id")
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
@@ -2088,7 +2084,10 @@ fn source_task_ids(
         }
         referenced.insert(task_id);
     }
-    let mut ids = referenced
+    // Ownership requires an actual link: the report's task_ref, the original
+    // assignment behind a reply, the handoff's recorded task_ids, or an explicit
+    // task_id. A single active task owned by the source member is not evidence.
+    let ids = referenced
         .into_iter()
         .filter(|id| {
             document
@@ -2097,34 +2096,6 @@ fn source_task_ids(
                 .any(|task| task.get("id").and_then(Value::as_str) == Some(id.as_str()))
         })
         .collect::<Vec<_>>();
-    if ids.is_empty() {
-        let candidates = document
-            .tasks
-            .iter()
-            .filter(|task| {
-                task.get("created_at")
-                    .and_then(Value::as_str)
-                    .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
-                    .zip(report_at)
-                    .is_some_and(|(created, reported)| created <= reported)
-            })
-            .filter(|task| {
-                !matches!(
-                    task.get("status")
-                        .and_then(Value::as_str)
-                        .unwrap_or("planned"),
-                    "done" | "archived"
-                ) && task
-                    .get("assignee")
-                    .and_then(Value::as_str)
-                    .is_some_and(|assignee| source_actors.contains(assignee))
-            })
-            .filter_map(|task| task.get("id").and_then(Value::as_str).map(str::to_owned))
-            .collect::<Vec<_>>();
-        if candidates.len() == 1 {
-            ids = candidates;
-        }
-    }
     Ok(ids)
 }
 

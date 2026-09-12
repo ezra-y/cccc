@@ -320,7 +320,7 @@ fn wait_user_records_machine_state_without_duplicating_the_original_output() {
 }
 
 #[test]
-fn task_updates_are_limited_to_the_handoff_source_and_unique_unreferenced_work_is_inferred() {
+fn task_updates_require_an_explicit_reference_and_preserve_other_members_work() {
     let fixture = Fixture::new("relay task ownership");
     let source_task = fixture.task("Unreferenced source task", "worker-a");
     let unrelated_task = fixture.task("Unrelated task", "worker-b");
@@ -365,12 +365,45 @@ fn task_updates_are_limited_to_the_handoff_source_and_unique_unreferenced_work_i
         .expect("finish unrelated task");
     let result = fixture
         .decide(json!({
-            "event_ids":[report.id],"decision":"complete",
-            "summary":"The one source-owned task is complete."
+            "event_ids":[report.id],"task_id":source_task,"decision":"complete",
+            "summary":"The source-owned task is complete by explicit reference."
         }))
-        .expect("complete inferred task");
+        .expect("complete explicitly owned task");
     assert_eq!(result["relay"]["task_ids"], json!([source_task]));
     assert_eq!(task(&fixture.context(), &source_task)["status"], "done");
+}
+
+#[test]
+fn unreferenced_reports_never_infer_task_ownership_from_a_single_active_task() {
+    let fixture = Fixture::new("no task inference");
+    let stray_task = fixture.task("Only active task", "worker-a");
+    // The report carries no task_ref, its handoff has no task_ids, and there is
+    // no reply_to chain to an original assignment.
+    let report = fixture.report("worker-a", "Unrelated status note.", None);
+    fixture.handoff(&report, "turn-no-task-link");
+
+    let result = fixture
+        .decide(json!({
+            "event_ids":[report.id],"decision":"complete",
+            "summary":"Completed the report without touching tasks."
+        }))
+        .expect_err("a live task still counts as remaining work");
+    assert_eq!(result.code, "relay_work_remains");
+    assert_eq!(task(&fixture.context(), &stray_task)["status"], "active");
+
+    let result = fixture
+        .decide(json!({
+            "event_ids":[report.id],"decision":"wait_user",
+            "summary":"Waiting on user direction."
+        }))
+        .expect("wait_user succeeds without task inference");
+    assert_eq!(result["relay"]["task_ids"], json!([]));
+    assert_eq!(
+        task(&fixture.context(), &stray_task)["waiting_on"],
+        "actor",
+        "an unreferenced task was flipped to waiting_on=user"
+    );
+    assert_eq!(task(&fixture.context(), &stray_task)["status"], "active");
 }
 
 #[test]
