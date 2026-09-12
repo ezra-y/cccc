@@ -227,6 +227,16 @@ impl BrowserSurfaces {
             )));
         }
         if existing.echo_found {
+            if provisional_submission(&existing) {
+                return Ok(PromptSubmissionOutcome::Ambiguous(evidence(
+                    false,
+                    "existing:message_echo",
+                    "optimistic_echo_unconfirmed",
+                    "",
+                    &existing,
+                    &existing,
+                )));
+            }
             self.record_page_state(key, &page).await;
             return Ok(PromptSubmissionOutcome::Verified(evidence(
                 true,
@@ -523,7 +533,7 @@ impl BrowserSurfaces {
                 &observed,
             ));
         }
-        if observed.echo_found {
+        if observed.echo_found && !provisional_submission(&observed) {
             return PromptSubmissionOutcome::Verified(evidence(
                 true,
                 attempt.action,
@@ -593,7 +603,7 @@ impl BrowserSurfaces {
                             &snapshot,
                         ));
                     }
-                    if snapshot.echo_found {
+                    if snapshot.echo_found && !provisional_submission(&snapshot) {
                         self.record_page_state(key, page).await;
                         return PromptSubmissionOutcome::Verified(evidence(
                             true,
@@ -1151,10 +1161,20 @@ pub(super) async fn inspect_submission(
     .context("decode browser prompt submission state")
 }
 
+// ChatGPT renders a request-* turn before the server has admitted the message.
+// Its immediate optimistic echo must not release the sending browser or settle
+// the original report as accepted. Reuse the normal bounded evidence wait.
+fn provisional_submission(snapshot: &SubmissionSnapshot) -> bool {
+    snapshot.latest_turn_id.starts_with("request-")
+}
+
 fn weak_submission_evidence(
     baseline: &SubmissionSnapshot,
     current: &SubmissionSnapshot,
 ) -> Option<&'static str> {
+    if provisional_submission(current) {
+        return Some("optimistic_echo_unconfirmed");
+    }
     if conversation_route_changed(&baseline.url, &current.url) {
         return Some("conversation_url_changed");
     }
@@ -1171,7 +1191,7 @@ fn verified_submission_evidence(
     baseline: &SubmissionSnapshot,
     current: &SubmissionSnapshot,
 ) -> Option<&'static str> {
-    (current.user_message_count > baseline.user_message_count)
+    (!provisional_submission(current) && current.user_message_count > baseline.user_message_count)
         .then_some("user_message_count_increased")
 }
 

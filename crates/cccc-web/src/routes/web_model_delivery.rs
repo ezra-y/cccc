@@ -150,6 +150,7 @@ async fn visit_pending(
                 )
             );
         let visited = state.browser_surfaces.info(surface_key()).await["active"] == true;
+        let mut pending_receipt = false;
         if !pending_url && visited {
             let blocked = state
                 .browser_surfaces
@@ -159,7 +160,15 @@ async fn visit_pending(
             let has_draft = blocked
                 .as_ref()
                 .is_some_and(|b| b["composer_chars"].as_u64().unwrap_or(0) > 0);
-            if !has_draft {
+            pending_receipt = target["last_submission_evidence"]["submission_evidence"]
+                == "optimistic_echo_unconfirmed"
+                && blocked.as_ref().is_some_and(|b| {
+                    b["latest_turn_id"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with("request-"))
+                });
+            // An optimistic bubble is still an in-flight Send, not idle time.
+            if !has_draft && !pending_receipt {
                 state
                     .browser_surfaces
                     .close(surface_key())
@@ -170,6 +179,7 @@ async fn visit_pending(
         if visited {
             let retry = target["last_delivery_status"] == "deferred"
                 || pending_url
+                || pending_receipt
                 || result.is_err()
                 || matches!(result, Ok(DeliveryOutcome::Deferred));
             super::web_model_browser::schedule_delivery_check(&state.home, retry)?;

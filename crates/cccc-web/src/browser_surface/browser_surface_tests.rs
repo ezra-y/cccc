@@ -849,7 +849,7 @@ async fn cross_chat_delivery_does_not_navigate_away_from_a_draft() {
 #[tokio::test]
 async fn submission_does_not_wait_for_background_intersection_observers() {
     require_chrome!();
-    let (url,server)=local_page(r#"<!doctype html><html><body><form onsubmit="event.preventDefault();window.sent=(window.sent||0)+1;const e=document.createElement('div');e.dataset.messageAuthorRole='user';e.textContent=document.querySelector('textarea').value;document.body.append(e);document.querySelector('textarea').value=''"><textarea id="prompt-textarea" style="width:500px;height:100px"></textarea><button id="composer-submit-button" type="submit" aria-label="Send prompt">Send</button></form></body></html>"#).await;
+    let (url,server)=local_page(r#"<!doctype html><html><body><form onsubmit="event.preventDefault();window.sent=(window.sent||0)+1;const turn=document.createElement('section');turn.dataset.testid='conversation-turn-1';turn.dataset.turnId='request-client-0';const e=document.createElement('div');e.dataset.messageAuthorRole='user';e.textContent=document.querySelector('textarea').value;turn.append(e);document.body.append(turn);document.querySelector('textarea').value='';setTimeout(()=>{turn.dataset.turnId='server-turn';window.accepted=true},600)"><textarea id="prompt-textarea" style="width:500px;height:100px"></textarea><button id="composer-submit-button" type="submit" aria-label="Send prompt">Send</button></form></body></html>"#).await;
     let temp = tempfile::tempdir().expect("tempdir");
     let manager = BrowserSurfaces::default();
     manager
@@ -886,6 +886,12 @@ async fn submission_does_not_wait_for_background_intersection_observers() {
         ),
     )
     .await;
+    let confirmed = page
+        .evaluate("Boolean(window.accepted)")
+        .await
+        .expect("server acknowledgement fixture")
+        .into_value::<bool>()
+        .expect("boolean");
     let count: u64 = page
         .evaluate("window.sent||0")
         .await
@@ -912,6 +918,20 @@ async fn submission_does_not_wait_for_background_intersection_observers() {
     } else {
         None
     };
+    page.evaluate(
+        "document.querySelector('[data-turn-id]').dataset.turnId='request-client-pending'",
+    )
+    .await
+    .expect("provisional duplicate fixture");
+    let provisional = manager
+        .submit_prompt_with_attachment(
+            "background-submit",
+            &url,
+            "BACKGROUND_REPORT",
+            None,
+            "background-once",
+        )
+        .await;
     let final_count: u64 = page
         .evaluate("window.sent||0")
         .await
@@ -927,6 +947,21 @@ async fn submission_does_not_wait_for_background_intersection_observers() {
         ),
         "background submission waited for a visual observer instead of invoking the checked Send control"
     );
+    assert!(
+        confirmed,
+        "optimistic client echo was mistaken for a completed submission"
+    );
+    assert!(
+        matches!(
+            provisional,
+            Ok(prompt_submission::PromptSubmissionOutcome::Ambiguous(_))
+        ),
+        "a provisional echo must neither be accepted nor sent again"
+    );
+    assert!(prompt_submission::stored_verified_submission_evidence(&json!({
+        "baseline":{"user_message_count":0},
+        "observed":{"user_message_count":1,"echo_found":true,"latest_turn_id":"request-client-pending"}
+    })).is_none(), "persisted optimistic evidence was promoted to accepted");
     assert_eq!(count, 1);
     assert!(matches!(
         repeated,
