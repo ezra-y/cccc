@@ -31,6 +31,10 @@ impl HttpFixture {
                     thread::sleep(Duration::from_millis(2));
                     continue;
                 };
+                // macOS inherits the listener's nonblocking flag on accept.
+                stream
+                    .set_nonblocking(false)
+                    .expect("blocking accepted stream");
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .expect("timeout");
@@ -309,6 +313,23 @@ fn transient_account_failure_preserves_intent_and_recovers() {
             .last_error
             .is_none()
     );
+}
+
+#[test]
+fn fixture_waits_for_request_bytes_after_accept() {
+    let fixture = HttpFixture::new(|_| (200, "{}".into()));
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", fixture.port)).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("timeout");
+    thread::sleep(Duration::from_millis(50));
+    stream.write_all(b"GET /delayed HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").expect("delayed request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("complete response");
+    assert!(response.starts_with("HTTP/1.1 200 "));
+    assert_eq!(fixture.requests.lock().expect("requests").len(), 1);
 }
 
 #[test]
