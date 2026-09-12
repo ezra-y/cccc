@@ -752,29 +752,12 @@ impl BrowserSurfaces {
             && !snapshot.stop_visible
             && snapshot.page_blocker.is_empty()
             && snapshot.composer_chars == 0
-            && super::relay_recovery::composer_present(&page).await?)
+            && composer_present(&page).await?)
     }
 
     pub(crate) async fn relay_surface_deferral(&self, key: &str) -> Result<Option<Value>> {
         let page = self.page(key).await?;
-        let mut snapshot = inspect_submission(&page, "__cccc_relay_busy_probe__", &[]).await?;
-        // A fresh check can encounter a refusal while the original remains stale.
-        // Share that observation until the original page or its turn changes.
-        if snapshot.page_blocker.is_empty()
-            && snapshot.composer_chars == 0
-            && (snapshot.running
-                || snapshot.stop_visible
-                || !super::relay_recovery::composer_present(&page).await?)
-            && let Some(session) = self.sessions.lock().await.get(key)
-        {
-            let cached = &session.metadata["relay_recovery"];
-            if cached["state"] == "blocked"
-                && cached["url"] == snapshot.url
-                && cached["source_turn"] == snapshot.latest_turn_id
-            {
-                snapshot.page_blocker = cached["reason"].as_str().unwrap_or("").to_owned();
-            }
-        }
+        let snapshot = inspect_submission(&page, "__cccc_relay_busy_probe__", &[]).await?;
         let blocker = format!("not_sent_{}", snapshot.page_blocker);
         let reason = if !snapshot.page_blocker.is_empty() {
             blocker.as_str()
@@ -784,7 +767,7 @@ impl BrowserSurfaces {
             "not_sent_chat_busy"
         } else if snapshot.composer_chars > 0 {
             "not_sent_composer_occupied"
-        } else if !super::relay_recovery::composer_present(&page).await? {
+        } else if !composer_present(&page).await? {
             "not_sent_composer_unavailable"
         } else {
             return Ok(None);
@@ -873,6 +856,14 @@ impl BrowserSurfaces {
         }
         session.updated_at = cccc_contracts::utc_now();
     }
+}
+
+async fn composer_present(page: &Page) -> Result<bool> {
+    let input: Value = page
+        .evaluate(format!("({SELECT_COMPOSER_SCRIPT})()"))
+        .await?
+        .into_value()?;
+    Ok(input["selector"].as_str().is_some_and(|s| !s.is_empty()))
 }
 
 async fn dismiss_duplicate_upload_dialog(page: &Page) -> Result<()> {

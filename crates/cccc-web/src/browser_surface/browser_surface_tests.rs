@@ -5,88 +5,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod chrome_test_guard;
 use chrome_test_guard::chrome_test_guard;
 
-#[tokio::test]
-async fn unchanged_conversation_has_a_finite_network_recovery_budget() {
-    if !chrome_available() {
-        return;
-    }
-    let _chrome_guard = chrome_test_guard().await;
-    let (url, server) = local_page(r#"<!doctype html><main><section data-testid="conversation-turn-1" data-turn-id="same-turn"></section><form><textarea id="prompt-textarea"></textarea><button aria-label="Stop streaming">Stop</button></form></main>"#).await;
-    let temp = tempfile::tempdir().expect("isolated profile");
-    let manager = BrowserSurfaces::default();
-    manager
-        .open(
-            "bounded-probe",
-            &temp.path().join("profile"),
-            &url,
-            800,
-            600,
-        )
-        .await
-        .expect("browser");
-    let result = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
-        manager
-            .reconcile_relay_page("bounded-probe", "b", "http://127.0.0.1:9/other")
-            .await
-            .expect("foreign target");
-        assert!(
-            manager
-                .sessions
-                .lock()
-                .await
-                .get("bounded-probe")
-                .expect("session")
-                .relay_probe
-                .is_none()
-        );
-        manager
-            .reconcile_relay_page("bounded-probe", "a", &url)
-            .await
-            .expect("first check");
-        {
-            let mut sessions = manager.sessions.lock().await;
-            let session = sessions.get_mut("bounded-probe").expect("session");
-            session
-                .relay_probe
-                .as_mut()
-                .expect("one network check")
-                .started = std::time::Instant::now() - std::time::Duration::from_secs(31);
-        }
-        manager
-            .reconcile_relay_page("bounded-probe", "a", &url)
-            .await
-            .expect("expire check");
-        for _ in 0..20 {
-            manager
-                .sessions
-                .lock()
-                .await
-                .get_mut("bounded-probe")
-                .expect("session")
-                .relay_probe_after = None;
-            manager
-                .reconcile_relay_page("bounded-probe", "a", &url)
-                .await
-                .expect("later tick");
-            assert!(
-                manager
-                    .sessions
-                    .lock()
-                    .await
-                    .get("bounded-probe")
-                    .expect("session")
-                    .relay_probe
-                    .is_none(),
-                "an unchanged conversation was reopened after its network budget was spent"
-            );
-        }
-    }))
-    .await;
-    manager.close("bounded-probe").await.expect("close");
-    server.abort();
-    result.expect("hard recovery bound");
-}
-
 macro_rules! require_chrome {
     () => {
         if !chrome_available() {
@@ -1113,99 +1031,6 @@ async fn relay_idle_probe_requires_an_empty_non_generating_composer() {
 }
 
 #[tokio::test]
-async fn stale_recovery_preserves_live_drafts_and_loading_turns() {
-    require_chrome!();
-    use super::relay_recovery::completed_turn;
-    let (url, server) = local_page(r#"<!doctype html><body><textarea id="prompt-textarea" style="width:500px;height:100px"></textarea><button id="busy" aria-label="Stop streaming">Stop</button><section data-testid="conversation-turn-1" data-turn-id="running-answer"></section><script>window.originalDocument=true</script></body>"#).await;
-    let url = format!("{url}/");
-    let temp = tempfile::tempdir().expect("temp");
-    let manager = std::sync::Arc::new(BrowserSurfaces::default());
-    manager
-        .ensure_open(
-            SHARED_WEB_MODEL_KEY,
-            &temp.path().join("browser"),
-            &url,
-            800,
-            600,
-        )
-        .await
-        .expect("open");
-    let work = manager.clone();
-    let result = tokio::spawn(async move {
-        let owner = "group-a::web";
-        let original = work.page(SHARED_WEB_MODEL_KEY).await.expect("original");
-        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner, &url).await.expect("begin check");
-        let fresh = {
-            let sessions = work.sessions.lock().await;
-            sessions.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").browser.pages().await.expect("freshness test operation")
-                .into_iter().find(|p| p.target_id() != original.target_id()).expect("temporary page")
-        };
-        for _ in 0..3 {
-            work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner, &url).await.expect("live answer");
-        }
-        assert!(completed_turn(&fresh, &url).await.expect("freshness test operation").is_none());
-        assert!(original.evaluate("window.originalDocument === true").await.expect("freshness test operation").into_value::<bool>().expect("freshness test operation"));
-        fresh.evaluate("document.querySelector('#busy').remove()").await.expect("freshness test operation");
-        assert!(completed_turn(&fresh, &url).await.expect("freshness test operation").is_none(), "loading mistaken for done");
-        fresh.evaluate(r#"document.querySelector('section').innerHTML = '<div data-message-author-role="assistant" data-message-id="answer">Partial answer</div>'"#).await.expect("freshness test operation");
-        assert!(completed_turn(&fresh, &url).await.expect("freshness test operation").is_none(), "partial answer mistaken for done");
-        fresh.evaluate(r#"document.querySelector('section').insertAdjacentHTML('beforeend','<button data-testid="copy-turn-action-button">Copy</button>')"#).await.expect("freshness test operation");
-        assert_eq!(completed_turn(&fresh, &url).await.expect("freshness test operation").as_deref(), Some("answer"));
-        fresh.evaluate(r#"document.body.insertAdjacentHTML('beforeend','<section data-testid="conversation-turn-2" data-turn-id="new-user">New user request</section>')"#).await.expect("freshness test operation");
-        assert!(completed_turn(&fresh, &url).await.expect("freshness test operation").is_none(), "earlier answer mistaken for current completion");
-        fresh.evaluate("document.querySelectorAll('section')[1].remove()").await.expect("freshness test operation");
-        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner, &url).await.expect("first complete observation");
-        // Human starts a draft after the fresh view completes: original stays untouched.
-        original.evaluate("document.querySelector('textarea').value='UNSENT HUMAN DRAFT'").await.expect("freshness test operation");
-        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner, &url).await.expect("draft protection");
-        assert_eq!(original.evaluate("document.querySelector('textarea').value").await.expect("freshness test operation").into_value::<String>().expect("freshness test operation"), "UNSENT HUMAN DRAFT");
-        assert!(original.evaluate("window.originalDocument === true").await.expect("freshness test operation").into_value::<bool>().expect("freshness test operation"));
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").browser.pages().await.expect("freshness test operation").len() != 1 {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        }).await.expect("Chrome confirms the temporary target has closed");
-        assert_eq!(work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").browser.pages().await.expect("freshness test operation").len(),1);
-        original.evaluate("document.querySelector('textarea').value='';document.querySelector('section').setAttribute('data-turn-id','resumed-turn')").await.expect("new source turn after draft");
-        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner, &url).await.expect("freshness test operation");
-        // Another group's cleanup must not cancel this waiting group's check.
-        work.cancel_relay_probe(SHARED_WEB_MODEL_KEY, "group-b::web").await;
-        assert!(work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").relay_probe.is_some());
-        // A new turn in the original tab invalidates the older observation.
-        original.evaluate("document.querySelector('section').setAttribute('data-turn-id','new-turn')").await.expect("freshness test operation");
-        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner, &url).await.expect("freshness test operation");
-        assert!(work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").relay_probe.is_none());
-        assert!(original.evaluate("window.originalDocument === true").await.expect("freshness test operation").into_value::<bool>().expect("freshness test operation"));
-        {
-            let mut sessions = work.sessions.lock().await;
-            sessions.get_mut(SHARED_WEB_MODEL_KEY).expect("freshness test operation").relay_probe_after = None;
-        }
-        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner, &url).await.expect("freshness test operation");
-        {
-            let mut sessions = work.sessions.lock().await;
-            sessions.get_mut(SHARED_WEB_MODEL_KEY).expect("freshness test operation").relay_probe.as_mut().expect("freshness test operation").started =
-                std::time::Instant::now() - std::time::Duration::from_secs(31);
-        }
-        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner, &url).await.expect("freshness test operation");
-        assert!(work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").relay_probe.is_none());
-        work.reconcile_relay_page(SHARED_WEB_MODEL_KEY, owner, &url).await.expect("freshness test operation");
-        assert!(work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").relay_probe.is_none(), "repeated checks ignored cooldown");
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").browser.pages().await.expect("freshness test operation").len() != 1 {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        }).await.expect("Chrome confirms the temporary target has closed");
-        assert_eq!(work.sessions.lock().await.get(SHARED_WEB_MODEL_KEY).expect("freshness test operation").browser.pages().await.expect("freshness test operation").len(),1);
-    }).await;
-    manager
-        .close(SHARED_WEB_MODEL_KEY)
-        .await
-        .expect("close browser");
-    server.abort();
-    result.expect("freshness guards");
-}
-
-#[tokio::test]
 async fn redirect_before_send_never_dispatches_to_another_conversation() {
     require_chrome!();
     let (url, server)=local_page(r#"<!doctype html><body><textarea id="prompt-textarea" placeholder="Message"></textarea><button data-testid="send-button">Send</button><script>globalThis.sends=0;document.querySelector('button').onclick=()=>{sends++;const n=document.createElement('div');n.dataset.messageAuthorRole='user';n.textContent=document.querySelector('textarea').value;document.body.append(n);document.querySelector('textarea').value='';history.replaceState({},'','/wrong-after-send')}</script></body>"#).await;
@@ -1507,22 +1332,6 @@ async fn archived_page_does_not_block_other_targets_or_trigger_reloads() {
             blocked["submission_evidence"],
             "not_sent_conversation_archived"
         );
-        for _ in 0..5 {
-            manager
-                .reconcile_relay_page("archived", "a", &archived_url)
-                .await
-                .expect("read only archive check");
-        }
-        assert!(
-            manager
-                .sessions
-                .lock()
-                .await
-                .get("archived")
-                .expect("session")
-                .relay_probe
-                .is_none()
-        );
         assert!(
             manager
                 .relay_target_deferral("archived", &ready_url)
@@ -1568,7 +1377,7 @@ async fn archived_page_does_not_block_other_targets_or_trigger_reloads() {
 }
 
 #[tokio::test]
-async fn refused_pages_and_fresh_probes_do_not_create_request_loops() {
+async fn refused_pages_do_not_navigate_or_submit() {
     require_chrome!();
     let (url, server) = local_page(r#"<!doctype html><body><main><section data-testid="conversation-turn-1" data-turn-id="turn"><div data-message-author-role="assistant">old answer</div></section><form><textarea id="prompt-textarea"></textarea><button id="busy" aria-label="Stop streaming">Stop</button></form></main></body>"#).await;
     let temp = tempfile::tempdir().expect("profile");
@@ -1579,24 +1388,8 @@ async fn refused_pages_and_fresh_probes_do_not_create_request_loops() {
         .expect("browser");
     let result = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
         let original = manager.page("refused").await.expect("original");
-        manager.reconcile_relay_page("refused", "owner", &url).await.expect("first probe");
-        let fresh = manager.sessions.lock().await.get("refused").expect("session").browser
-            .pages().await.expect("pages").into_iter().find(|page| page.target_id() != original.target_id()).expect("probe created");
-        fresh.evaluate("document.body.innerHTML='<div role=alert>Too many requests</div>'").await.expect("rate limit fixture");
-        manager.reconcile_relay_page("refused", "owner", &url).await.expect("stop after refusal");
-        for _ in 0..5 {
-            manager.sessions.lock().await.get_mut("refused").expect("session").relay_probe_after = None;
-            manager.reconcile_relay_page("refused", "owner", &url).await.expect("no repeated network recovery");
-            assert!(manager.sessions.lock().await.get("refused").expect("session").relay_probe.is_none());
-        }
-        assert_eq!(manager.relay_surface_deferral("refused").await.expect("deferral").expect("cached refusal")["submission_evidence"], "not_sent_rate_limited");
-        original.evaluate("document.querySelector('#busy').remove()") .await.expect("source became ready");
-        manager.reconcile_relay_page("refused", "owner", &url).await.expect("source recovery");
-        assert!(manager.relay_surface_deferral("refused").await.expect("ready source").is_none());
         for (notice, code) in [("Access denied", "access_denied"), ("Verify you are human", "verification_required"), ("操作过于频繁", "rate_limited")] {
             original.evaluate(format!("document.body.innerHTML='<main><div role=alert>{notice}</div></main>'")).await.expect("restriction fixture");
-            for _ in 0..3 { manager.reconcile_relay_page("refused", "owner", &url).await.expect("quiet blocked check"); }
-            assert!(manager.sessions.lock().await.get("refused").expect("session").relay_probe.is_none());
             let attempt = manager.submit_prompt_with_attachment("refused", "http://127.0.0.1:1/other", "DO_NOT_SEND", None, "blocked").await.expect("must defer without navigation");
             let PromptSubmissionOutcome::Deferred(evidence) = attempt else { panic!("refusal was not preserved") };
             assert_eq!(evidence["submission_evidence"], format!("not_sent_{code}"));

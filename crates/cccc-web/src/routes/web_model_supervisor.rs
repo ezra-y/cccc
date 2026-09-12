@@ -1,18 +1,11 @@
 use cccc_contracts::{Actor, ActorRuntime, GroupState, RunnerKind};
 use cccc_core::{GroupDoc, GroupStore};
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::broadcast;
 
 use crate::AppState;
 
 const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(30);
-const WARMUP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
-const DEFAULT_WIDTH: u32 = 1366;
-const DEFAULT_HEIGHT: u32 = 900;
-
-static WARMUP_ATTEMPTS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 
 pub(crate) fn spawn(state: AppState) {
     if state.web_mode.is_read_only() {
@@ -28,7 +21,7 @@ pub(crate) fn spawn(state: AppState) {
                 _ = shutdown.recv() => break,
                 _ = interval.tick() => ensure_running_actor(&state, None, false).await,
                 event = events.recv() => match event {
-                    Ok(event) => ensure_running_actor(&state, Some(&event.group_id), true).await,
+                    Ok(_) => ensure_running_actor(&state, None, true).await,
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         ensure_running_actor(&state, None, true).await;
                     }
@@ -49,56 +42,20 @@ pub(super) async fn ensure_running_actor(
     }
 }
 
-async fn ensure_actor(state: &AppState, group_id: String, actor_id: String, event_trigger: bool) {
+async fn ensure_actor(state: &AppState, group_id: String, actor_id: String, _event_trigger: bool) {
     if super::web_model_browser::automation_hold(&state.home).is_some() {
         return;
     }
-    // Chat-first groups can dispatch locally before providing a return URL.
-    // Do not launch a browser or ask for sign-in until a return target is configured.
     let Ok(target) = super::web_model_delivery_state::target(state, &group_id, &actor_id) else {
         return;
     };
     if target["kind"] != "new_chat" && target["url"].as_str().is_none_or(str::is_empty) {
         return;
     }
-    let session_key = super::web_model_browser::key(&group_id, &actor_id);
-    let surface = state
-        .browser_surfaces
-        .info(super::web_model_browser::surface_key())
-        .await;
-    if surface["active"].as_bool().unwrap_or(false) {
-        ensure_relay_decision_reminder(state, &group_id, &actor_id).await;
-        if should_start_delivery_worker(event_trigger, &target) {
-            super::web_model_delivery::ensure_worker(
-                state.clone(),
-                group_id.clone(),
-                actor_id.clone(),
-            )
-            .await;
-        }
-        return;
-    }
-    if !warmup_due(&session_key) {
-        return;
-    }
-    match super::web_model_browser::ensure_open_for_actor(
-        state,
-        &group_id,
-        &actor_id,
-        DEFAULT_WIDTH,
-        DEFAULT_HEIGHT,
-    )
-    .await
-    {
-        Ok(_) => {
-            clear_warmup_attempt(&session_key);
-            ensure_relay_decision_reminder(state, &group_id, &actor_id).await;
-            super::web_model_delivery::ensure_worker(state.clone(), group_id, actor_id).await;
-        }
-        Err(error) => {
-            tracing::warn!(%error, group_id, actor_id, "Web-model browser warmup failed");
-        }
-    }
+    ensure_relay_decision_reminder(state, &group_id, &actor_id).await;
+    // The native queue is checked before opening. This existing tick wakes a
+    // short visit, not a resident browser or a second delivery loop.
+    super::web_model_delivery::ensure_worker(state.clone(), group_id, actor_id).await;
 }
 
 async fn ensure_relay_decision_reminder(state: &AppState, group_id: &str, actor_id: &str) {
@@ -151,7 +108,7 @@ fn running_browser_actors(
                 .filter_map(|group| store.load(&group.group_id).ok())
                 .collect()
         };
-    groups
+    let mut actors: Vec<_> = groups
         .into_iter()
         .flat_map(|group| {
             group
@@ -161,7 +118,19 @@ fn running_browser_actors(
                 .map(|actor| (group.group_id.clone(), actor.id.clone()))
                 .collect::<Vec<_>>()
         })
-        .collect()
+        .collect();
+    // Reuse the native attempt timestamp: an unchecked group gets a turn before
+    // the group that just spent the shared account's last browser visit.
+    actors.sort_by_cached_key(|(group, actor)| {
+        super::web_model_delivery_state::target(state, group, actor)
+            .ok()
+            .and_then(|target| {
+                target["last_delivery_started_at"]
+                    .as_str()
+                    .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            })
+    });
+    actors
 }
 
 fn group_actor_delivery_enabled(state: &AppState, group: &GroupDoc, actor: &Actor) -> bool {
@@ -235,78 +204,6 @@ fn group_state_allows_delivery(running: bool, state: GroupState) -> bool {
     running && !matches!(state, GroupState::Paused | GroupState::Stopped)
 }
 
-fn should_start_delivery_worker(event_trigger: bool, target: &serde_json::Value) -> bool {
-    event_trigger
-        || (target["last_delivery_status"] == "deferred"
-            && super::web_model_delivery::retryable_pre_send_deferral(
-                &target["last_submission_evidence"],
-            ))
-}
-
 fn normalize(value: impl AsRef<str>) -> String {
     value.as_ref().trim().to_ascii_lowercase()
-}
-
-fn warmup_due(key: &str) -> bool {
-    let now = Instant::now();
-    let attempts = WARMUP_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut attempts = attempts
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if attempts
-        .get(key)
-        .is_some_and(|last| now.duration_since(*last) < WARMUP_RETRY_INTERVAL)
-    {
-        return false;
-    }
-    attempts.insert(key.to_owned(), now);
-    true
-}
-
-fn clear_warmup_attempt(key: &str) {
-    let Some(attempts) = WARMUP_ATTEMPTS.get() else {
-        return;
-    };
-    attempts
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(key);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::should_start_delivery_worker;
-    use serde_json::json;
-
-    #[test]
-    fn periodic_tick_rearms_a_safely_deferred_browser_delivery() {
-        for evidence in [
-            "not_sent_chat_busy",
-            "not_sent_composer_occupied",
-            "not_sent_composer_unavailable",
-        ] {
-            let target = json!({
-                "last_delivery_status":"deferred",
-                "last_submission_evidence":{"submission_evidence":evidence}
-            });
-            assert!(
-                should_start_delivery_worker(false, &target),
-                "periodic tick did not re-arm {evidence}"
-            );
-        }
-    }
-
-    #[test]
-    fn periodic_tick_does_not_restart_permanent_or_uncertain_deliveries() {
-        for target in [
-            json!({}),
-            json!({"last_delivery_status":"handled"}),
-            json!({"last_delivery_status":"submission_ambiguous"}),
-            json!({"last_delivery_status":"deferred","last_submission_evidence":{"submission_evidence":"not_sent_login_required"}}),
-            json!({"last_delivery_status":"failed","last_submission_evidence":{"submission_evidence":"bound_conversation_unavailable"}}),
-        ] {
-            assert!(!should_start_delivery_worker(false, &target));
-        }
-        assert!(should_start_delivery_worker(true, &json!({})));
-    }
 }

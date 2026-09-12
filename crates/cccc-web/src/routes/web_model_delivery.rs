@@ -22,14 +22,6 @@ use super::web_model_delivery_state::{record_connector, snapshot, update_target}
 
 static IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static WORKERS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-pub(super) const IDLE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-const DEFERRED_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(3);
-const DEFERRED_MAX_AUTOMATIC_RETRIES: u32 = 3;
-
-fn deferred_retry_delay(retries: u32) -> Option<std::time::Duration> {
-    (retries < DEFERRED_MAX_AUTOMATIC_RETRIES).then(|| DEFERRED_RETRY_BASE * (1_u32 << retries))
-}
-
 const BOOTSTRAP_SEED_VERSION: &str = "web-model-bootstrap-normal-system-prompt-v2";
 const COMPATIBILITY_IMAGE_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAKUlEQVR42u3OIQEAAAACIP+f1hkWWEB6FgEBAQEBAQEBAQEBAQEBgXdgl/rw4tnPBf0AAAAASUVORK5CYII=";
 const COMPATIBILITY_IMAGE_NOTE: &str = "[CCCC] Compatibility attachment: the blank image is transport-only and carries no task context.";
@@ -59,7 +51,7 @@ struct DeliveryAttempt<'a> {
 pub(super) enum DeliveryOutcome {
     Submitted,
     Idle,
-    Deferred(String, Box<BrowserTargetOwner>),
+    Deferred,
     Ambiguous,
     Stopped,
 }
@@ -90,189 +82,32 @@ fn requires_browser_action(evidence: &Value) -> bool {
 
 fn spawn_worker(state: AppState, group_id: String, actor_id: String) {
     let session_key = key(&group_id, &actor_id);
-    let Some(worker) = SessionGuard::acquire(&WORKERS, session_key.clone()) else {
+    let Some(worker) = SessionGuard::acquire(&WORKERS, session_key) else {
         return;
     };
     tokio::spawn(async move {
-        // Retain the worker through final failure accounting, then release it
-        // before scheduling work for a replacement target or a fresh turn.
-        let exhausted_turn_id = {
-            let mut exhausted_turn_id = None;
-            let mut retry_seconds = 1_u64;
-            let mut deferred_owner = None;
-            let mut deferred_retries = 0_u32;
-            let mut shutdown = state.shutdown.subscribe();
-            loop {
-                let surface = state.browser_surfaces.info(surface_key()).await;
-                if !surface["active"].as_bool().unwrap_or(false) {
-                    break;
-                }
-                let delay = match deliver_pending(&state, &group_id, &actor_id).await {
-                    Ok(DeliveryOutcome::Submitted) => {
-                        retry_seconds = 1;
-                        deferred_owner = None;
-                        deferred_retries = 0;
-                        std::time::Duration::from_millis(10)
-                    }
-                    Ok(DeliveryOutcome::Deferred(turn_id, owner)) => {
-                        retry_seconds = 1;
-                        if deferred_owner.as_ref() != Some(&owner) {
-                            deferred_owner = Some(owner.clone());
-                            deferred_retries = 0;
-                        }
-                        let Some(delay) = deferred_retry_delay(deferred_retries) else {
-                            tracing::info!(
-                                group_id,
-                                actor_id,
-                                turn_id,
-                                "Web-model browser deferred retry budget exhausted"
-                            );
-                            exhausted_turn_id = Some((turn_id, owner));
-                            break;
-                        };
-                        deferred_retries += 1;
-                        delay
-                    }
-                    Ok(DeliveryOutcome::Idle | DeliveryOutcome::Ambiguous) => {
-                        retry_seconds = 1;
-                        deferred_owner = None;
-                        deferred_retries = 0;
-                        IDLE_POLL_INTERVAL
-                    }
-                    Ok(DeliveryOutcome::Stopped) => break,
-                    Err(error) => {
-                        tracing::warn!(
-                            group_id,
-                            actor_id,
-                            %error,
-                            "Web-model browser delivery failed; retrying"
-                        );
-                        retry_seconds = (retry_seconds * 2).min(30);
-                        std::time::Duration::from_secs(retry_seconds)
-                    }
-                };
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {},
-                    _ = shutdown.recv() => break,
-                }
-            }
-            exhausted_turn_id
-        };
-
-        let Some((exhausted_turn_id, exhausted_owner)) = exhausted_turn_id else {
-            return;
-        };
-        if let Ok((target, current_owner)) = snapshot(&state, &group_id, &actor_id) {
-            if current_owner != *exhausted_owner {
-                drop(worker);
-                spawn_worker(state, group_id, actor_id);
-                return;
-            }
-            let owner = &exhausted_owner;
-            let message =
-                "browser model remained unavailable after the bounded automatic retry budget";
-            let _ = update_target(
-                &state,
-                &group_id,
-                &actor_id,
-                owner,
-                json!({"last_delivery_status":"failed","last_error":message}),
-            );
-            if let (Some(delivery_id), Some(event_ids)) = (
-                target["last_delivery_id"].as_str(),
-                target["last_delivery_event_ids"].as_array(),
-            ) {
-                let _ = record_delivery(
-                    &state,
-                    &group_id,
-                    &actor_id,
-                    &exhausted_turn_id,
-                    Value::Array(event_ids.clone()),
-                    delivery_id,
-                    "failed",
-                    message,
-                    json!({"target_url":target["url"]}),
-                )
-                .await;
-            }
-        }
-        drop(worker);
-        match fresh_turn_after_exhaustion(&state, &group_id, &actor_id, &exhausted_turn_id).await {
-            Ok(Some(fresh_turn_id)) => {
-                tracing::debug!(
-                    group_id,
-                    actor_id,
-                    exhausted_turn_id,
-                    fresh_turn_id,
-                    "Rescheduling Web-model browser delivery for fresh direct work"
-                );
-                spawn_worker(state, group_id, actor_id);
-            }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(
-                    group_id,
-                    actor_id,
-                    %error,
-                    "Web-model browser fresh unread check failed"
-                );
-            }
+        let _worker = worker;
+        if let Err(error) = visit_pending(&state, &group_id, &actor_id, true).await {
+            tracing::warn!(group_id, actor_id, %error, "Browser delivery visit ended; original work retained");
         }
     });
 }
 
-async fn fresh_turn_after_exhaustion(
-    state: &AppState,
-    group_id: &str,
-    actor_id: &str,
-    exhausted_turn_id: &str,
-) -> Result<Option<String>, ApiError> {
-    if !super::web_model_supervisor::actor_delivery_enabled(state, group_id, actor_id) {
-        return Ok(None);
-    }
-    let wait = daemon_call(
-        state,
-        "runtime_wait_next_turn",
-        browser_wait_args(group_id, actor_id),
-    )
-    .await?;
-    let replacement = replacement_turn_id(exhausted_turn_id, &wait);
-    if replacement.is_none() && wait["status"] == "work_available" {
-        let turn = &wait["turn"];
-        let turn_id = required(turn, "turn_id")?;
-        // wait_next_turn reserves work. A no-new-work check must release its
-        // exact reservation, otherwise manual retry and restart are both stuck.
-        record_delivery(
-            state,
-            group_id,
-            actor_id,
-            turn_id,
-            turn["event_ids"].clone(),
-            &browser_delivery_id(actor_id, turn_id),
-            "failed",
-            "automatic retry budget exhausted before Send; original report retained",
-            json!({}),
-        )
-        .await?;
-    }
-    Ok(replacement)
-}
-
-fn replacement_turn_id(exhausted_turn_id: &str, wait: &Value) -> Option<String> {
-    if wait["status"] != "work_available" {
-        return None;
-    }
-    wait["turn"]["turn_id"]
-        .as_str()
-        .map(str::trim)
-        .filter(|turn_id| !turn_id.is_empty() && *turn_id != exhausted_turn_id)
-        .map(str::to_owned)
-}
-
+// Component tests own their browser lifetime; production always uses an automatic visit.
+#[cfg(test)]
 pub(super) async fn deliver_pending(
     state: &AppState,
     group_id: &str,
     actor_id: &str,
+) -> Result<DeliveryOutcome, ApiError> {
+    visit_pending(state, group_id, actor_id, false).await
+}
+
+async fn visit_pending(
+    state: &AppState,
+    group_id: &str,
+    actor_id: &str,
+    manage_browser: bool,
 ) -> Result<DeliveryOutcome, ApiError> {
     let session_key = key(group_id, actor_id);
     let Some(_delivery) = SessionGuard::acquire(&IN_FLIGHT, session_key.clone()) else {
@@ -282,7 +117,65 @@ pub(super) async fn deliver_pending(
     if super::web_model_browser::another_chat_is_pending(state, group_id, actor_id)? {
         return Ok(DeliveryOutcome::Idle);
     }
-    deliver_once(state, group_id, actor_id, surface_key()).await
+    let surface = state.browser_surfaces.info(surface_key()).await;
+    let automatic = surface["active"] != true
+        || state
+            .browser_surfaces
+            .web_model_auto_close
+            .load(std::sync::atomic::Ordering::Acquire);
+    if automatic
+        && super::web_model_browser::next_delivery_check(&state.home)?
+            .is_some_and(|at| chrono::Utc::now() < at)
+    {
+        return Ok(DeliveryOutcome::Idle);
+    }
+    let result = deliver_once(state, group_id, actor_id, surface_key(), manage_browser).await;
+    if state
+        .browser_surfaces
+        .web_model_auto_close
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        // Keep a newly created chat until its durable /c/... target is known.
+        // Never close a human draft, a login window explicitly opened by the
+        // user, or a different group's in-flight navigation.
+        let target = super::web_model_delivery_state::target(state, group_id, actor_id)?;
+        let pending_url = target["kind"] == "new_chat"
+            && matches!(
+                target["last_delivery_status"].as_str(),
+                Some(
+                    "pending_new_chat_bind"
+                        | "submitted"
+                        | "completion_ambiguous"
+                        | "submission_ambiguous"
+                )
+            );
+        let visited = state.browser_surfaces.info(surface_key()).await["active"] == true;
+        if !pending_url && visited {
+            let blocked = state
+                .browser_surfaces
+                .relay_surface_deferral(surface_key())
+                .await
+                .map_err(|error| ApiError::bad(error.to_string()))?;
+            let has_draft = blocked
+                .as_ref()
+                .is_some_and(|b| b["composer_chars"].as_u64().unwrap_or(0) > 0);
+            if !has_draft {
+                state
+                    .browser_surfaces
+                    .close(surface_key())
+                    .await
+                    .map_err(|error| ApiError::bad(error.to_string()))?;
+            }
+        }
+        if visited {
+            let retry = target["last_delivery_status"] == "deferred"
+                || pending_url
+                || result.is_err()
+                || matches!(result, Ok(DeliveryOutcome::Deferred));
+            super::web_model_browser::schedule_delivery_check(&state.home, retry)?;
+        }
+    }
+    result
 }
 
 struct SessionGuard {
@@ -317,28 +210,24 @@ async fn deliver_once(
     group_id: &str,
     actor_id: &str,
     session_key: &str,
+    manage_browser: bool,
 ) -> Result<DeliveryOutcome, ApiError> {
-    if super::web_model_browser::automation_hold(&state.home).is_some() {
-        state
-            .browser_surfaces
-            .cancel_relay_probe(session_key, &key(group_id, actor_id))
-            .await;
-        return Ok(DeliveryOutcome::Stopped);
-    }
-    if !super::web_model_supervisor::actor_delivery_enabled(state, group_id, actor_id) {
-        state
-            .browser_surfaces
-            .cancel_relay_probe(session_key, &key(group_id, actor_id))
-            .await;
+    if super::web_model_browser::automation_hold(&state.home).is_some()
+        || !super::web_model_supervisor::actor_delivery_enabled(state, group_id, actor_id)
+    {
         return Ok(DeliveryOutcome::Stopped);
     }
     let surface = state.browser_surfaces.info(session_key).await;
-    if !surface["active"].as_bool().unwrap_or(false) {
-        return Ok(DeliveryOutcome::Idle);
-    }
     let (target, target_owner) = snapshot(state, group_id, actor_id)?;
     let owner = &target_owner;
     let target_url = target["url"].as_str().unwrap_or("");
+    if surface["active"] != true
+        && target["last_submission_evidence"]["submission_evidence"]
+            == "bound_conversation_unavailable"
+    {
+        return Ok(DeliveryOutcome::Stopped);
+    }
+
     if target["last_delivery_status"] == "preparing" {
         return retry_unsubmitted_turn(
             state,
@@ -353,12 +242,6 @@ async fn deliver_once(
             "browser preparation was interrupted before any Send action",
         )
         .await;
-    }
-    if target["last_delivery_status"] != "deferred" {
-        state
-            .browser_surfaces
-            .cancel_relay_probe(session_key, &key(group_id, actor_id))
-            .await;
     }
     let mut retained_busy_deferral = target["last_delivery_status"] == "deferred"
         && (retryable_pre_send_deferral(&target["last_submission_evidence"])
@@ -395,10 +278,6 @@ async fn deliver_once(
                             == "ambiguous"
                     })
             });
-            state
-                .browser_surfaces
-                .cancel_relay_probe(surface_key(), &key(group_id, actor_id))
-                .await;
             update_target(
                 state,
                 group_id,
@@ -412,7 +291,20 @@ async fn deliver_once(
             retained_busy_deferral = false;
         }
     }
-    if retained_busy_deferral {
+    if retained_busy_deferral
+        && requires_browser_action(&target["last_submission_evidence"])
+        && surface["active"] != true
+    {
+        return Ok(DeliveryOutcome::Stopped);
+    }
+    if retained_busy_deferral && surface["active"] == true {
+        if state
+            .browser_surfaces
+            .web_model_auto_close
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            super::web_model_browser::schedule_delivery_check(&state.home, true)?;
+        }
         // A previously archived target needs explicit restoration/replacement.
         // Do not keep navigating back from another group's working conversation.
         if target["last_submission_evidence"]["submission_evidence"]
@@ -421,30 +313,24 @@ async fn deliver_once(
         {
             return Ok(DeliveryOutcome::Stopped);
         }
-        let mut blocked = state
+        let blocked = state
             .browser_surfaces
             .relay_target_deferral(session_key, target_url)
             .await
             .map_err(|e| ApiError::unavailable("web_model_browser_probe_failed", e.to_string()))?;
-        if blocked.as_ref().is_some_and(retryable_pre_send_deferral) {
-            state
-                .browser_surfaces
-                .reconcile_relay_page(session_key, &key(group_id, actor_id), target_url)
-                .await
-                .map_err(|e| {
-                    ApiError::unavailable("web_model_page_recheck_failed", e.to_string())
-                })?;
-            blocked = state
-                .browser_surfaces
-                .relay_target_deferral(session_key, target_url)
-                .await
-                .map_err(|e| {
-                    ApiError::unavailable("web_model_browser_probe_failed", e.to_string())
-                })?;
-        }
         if let Some(browser) = blocked {
             super::web_model_browser::hold_on_restriction(state, &browser)?;
             let needs_action = requires_browser_action(&browser);
+            if manage_browser
+                && !needs_action
+                && browser["composer_chars"].as_u64().unwrap_or(0) == 0
+            {
+                state
+                    .browser_surfaces
+                    .web_model_auto_close
+                    .store(true, std::sync::atomic::Ordering::Release);
+                super::web_model_browser::schedule_delivery_check(&state.home, true)?;
+            }
             if browser["submission_evidence"]
                 != target["last_submission_evidence"]["submission_evidence"]
             {
@@ -462,10 +348,6 @@ async fn deliver_once(
                 DeliveryOutcome::Idle
             });
         }
-        state
-            .browser_surfaces
-            .cancel_relay_probe(session_key, &key(group_id, actor_id))
-            .await;
     }
     if target["last_delivery_status"] == "submitting" {
         let message = "browser delivery was interrupted after its at-most-once dispatch fence; the message will not be redelivered automatically";
@@ -671,6 +553,52 @@ async fn deliver_once(
         )
         .await;
     }
+    if manage_browser && surface["active"] == true {
+        let blocker = state
+            .browser_surfaces
+            .relay_surface_deferral(session_key)
+            .await
+            .map_err(|error| ApiError::bad(error.to_string()))?;
+        // A real admitted batch takes ownership of an already-open delivery page.
+        // Login and human drafts remain owned by the user until resolved.
+        if blocker.as_ref().is_none_or(|b| {
+            b["composer_chars"].as_u64().unwrap_or(0) == 0 && !requires_browser_action(b)
+        }) {
+            state
+                .browser_surfaces
+                .web_model_auto_close
+                .store(true, std::sync::atomic::Ordering::Release);
+            super::web_model_browser::schedule_delivery_check(&state.home, true)?;
+        }
+    }
+    if surface["active"] != true {
+        // Reserve the account-wide five-minute delay BEFORE any network work;
+        // failed launches and process restarts must not turn into retry storms.
+        super::web_model_browser::schedule_delivery_check(&state.home, true)?;
+        state
+            .browser_surfaces
+            .web_model_auto_close
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Err(error) = super::web_model_browser::ensure_open_for_actor_locked(
+            state, group_id, actor_id, 1366, 900,
+        )
+        .await
+        {
+            return retry_unsubmitted_turn(
+                state,
+                group_id,
+                actor_id,
+                DeliveryAttempt {
+                    owner,
+                    turn_id,
+                    event_ids: turn["event_ids"].clone(),
+                    delivery_id: &delivery_id,
+                },
+                &error.to_string(),
+            )
+            .await;
+        }
+    }
     let target_owner = owner.for_delivery(&delivery_id);
     let owner = &target_owner;
     let event_label = turn["event_ids"]
@@ -722,8 +650,7 @@ async fn deliver_once(
     let submitted = if matches!(
         &submitted,
         Err(_) | Ok(PromptSubmissionOutcome::Deferred(_))
-    ) && snapshot(state, group_id, actor_id)?.1 != *owner
-    {
+    ) {
         state
             .browser_surfaces
             .clear_staged_prompt(session_key, &browser_prompt, &delivery_id)
@@ -768,7 +695,7 @@ async fn deliver_once(
             } else if busy {
                 DeliveryOutcome::Idle
             } else {
-                DeliveryOutcome::Deferred(turn_id.to_owned(), Box::new(owner.clone()))
+                DeliveryOutcome::Deferred
             });
         }
         Ok(PromptSubmissionOutcome::Ambiguous(browser)) => {
@@ -1072,10 +999,7 @@ async fn retry_unsubmitted_turn(
         attempt.turn_id,
         error,
     )?;
-    Ok(DeliveryOutcome::Deferred(
-        attempt.turn_id.to_owned(),
-        Box::new(owner.clone()),
-    ))
+    Ok(DeliveryOutcome::Deferred)
 }
 
 async fn complete_ambiguous_attempt(
@@ -1377,10 +1301,7 @@ async fn recover_legacy_pending_delivery(
                     "last_error":message
                 }),
             )?;
-            return Ok(DeliveryOutcome::Deferred(
-                turn_id.to_owned(),
-                Box::new(owner.clone()),
-            ));
+            return Ok(DeliveryOutcome::Deferred);
         }
         Ok(PromptSubmissionOutcome::Ambiguous(browser)) => {
             let message = "legacy recovery attempted submission but could not verify whether ChatGPT accepted it; automatic redelivery is paused";
@@ -2016,8 +1937,9 @@ mod retry_integration_tests {
                 .command(surface_key(), &json!({"t":"click","x":390,"y":28}))
                 .await
                 .expect("resolve isolated fixture draft");
-            super::super::web_model_supervisor::ensure_running_actor(&state, Some(gid), false)
-                .await;
+            deliver_pending(&state, gid, "web")
+                .await
+                .expect("manual delivery visit");
             let resumed = timeout(Duration::from_secs(12), async {
                 while count.load(Ordering::SeqCst) != 1 {
                     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2086,7 +2008,7 @@ mod retry_integration_tests {
                 let attempt = deliver_pending(&state, gid, "web")
                     .await
                     .expect("next handoff");
-                // The periodic worker remains alive. Either contender may send;
+                // The supervisor may start another short visit. Either contender may send;
                 // assert the original's durable receipt, never who won admission.
                 assert!(matches!(
                     attempt,
@@ -2139,8 +2061,8 @@ mod retry_integration_tests {
                 20,
                 "delivery consumed Mail"
             );
-            // Repeated real events call ensure_worker while one owner is polling.
-            // Losing admission must not remove that owner or reset its idle cadence.
+            // Repeated real events request short visits.
+            // Losing admission must not remove the current owner or cross Send.
             browser
                 .command(surface_key(), &json!({"t":"click","x":100,"y":110}))
                 .await
@@ -2158,7 +2080,9 @@ mod retry_integration_tests {
             .await
             .expect("promote contended Mail");
             for _ in 0..20 {
-                ensure_worker(state.clone(), gid.to_owned(), "web".into()).await;
+                deliver_pending(&state, gid, "web")
+                    .await
+                    .expect("manual delivery visit");
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2191,16 +2115,19 @@ mod retry_integration_tests {
                 .command(surface_key(), &json!({"t":"click","x":390,"y":28}))
                 .await
                 .expect("clear fixture draft");
+            deliver_pending(&state, gid, "web")
+                .await
+                .expect("manual delivery visit");
             timeout(Duration::from_secs(8), async {
                 while count.load(Ordering::SeqCst) != 21 {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             })
             .await
-            .expect("original worker resumes queued Mail without another source message");
+            .expect("periodic supervision resumes original Mail without another source message");
             assert_eq!(count.load(Ordering::SeqCst), 21);
             eprintln!(
-                "REAL_CHROME_AND_DAEMON: 20 handoffs; 20 duplicate worker admissions preserve one polling owner; draft release delivers original report once"
+                "REAL_CHROME_AND_DAEMON: 20 handoffs; 20 duplicate visit requests never cross a protected draft; draft release delivers original report once"
             );
         };
         // Cleanup runs even if a test assertion panics in the task.
@@ -2212,361 +2139,160 @@ mod retry_integration_tests {
     }
 
     #[tokio::test]
-    async fn real_browser_stale_stop_recovers_delayed_report_once() {
-        if crate::system_browser_path().is_none() {
-            return;
-        }
-        let harness = browser_harness("test-browser-retry", Duration::from_millis(10)).await;
+    async fn on_demand_browser_reopens_original_reports_after_shared_cooldown() {
+        assert!(
+            crate::system_browser_path().is_some(),
+            "real Chrome required"
+        );
+        let harness = browser_harness("on-demand", Duration::from_millis(10)).await;
         let state = harness.state.clone();
-        let home = harness.home.clone();
-        let browser = Arc::clone(&harness.browser);
-        let api = harness.api.clone();
-        let api_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("API listener");
-        let _api_url = format!("http://{}", api_listener.local_addr().expect("API address"));
-        let api_server = tokio::spawn(async move {
-            axum::serve(
-                api_listener,
-                api.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .await
-        });
-        let count = Arc::new(AtomicUsize::new(0));
-        let received = Arc::clone(&count);
-        let page = r#"<!doctype html><html><body>
-<button style="position:fixed;left:10px;top:10px;width:130px;height:36px" type="button" onclick="document.querySelector('#busy').remove();this.remove()">Finish current answer</button>
-<button style="position:fixed;left:350px;top:10px;width:130px;height:36px" type="button" onclick="document.querySelector('textarea').value=''">Resolve own test draft</button>
-<button id="busy" type="button" aria-label="Stop streaming" style="position:fixed;left:180px;top:10px">Stop</button>
-<textarea id="prompt-textarea" placeholder="Message" style="position:fixed;left:10px;top:70px;width:650px;height:120px">unsent human draft</textarea>
-<button data-testid="send-button" type="button" aria-label="Send prompt" style="position:fixed;left:10px;top:230px;width:100px;height:35px" onclick="const t=document.querySelector('textarea');if(!t.value)return;const d=document.createElement('div');d.dataset.messageAuthorRole='user';d.textContent=t.value;d.style='margin-top:290px';document.body.append(d);t.value='';fetch('/received',{method:'POST'})">Send</button>
-</body></html>"#;
-        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let page_finished = Arc::clone(&finished);
+        let ready = Arc::new(AtomicUsize::new(0));
+        let visits = Arc::new(AtomicUsize::new(0));
+        let received = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (page_ready, page_visits, sink) = (ready.clone(), visits.clone(), received.clone());
+        let page = r#"<html><body><form><textarea id="prompt-textarea"></textarea><button type="button" aria-label="Send prompt" onclick="const t=document.querySelector('textarea'); const n=document.createElement('div'); n.dataset.messageAuthorRole='user'; n.textContent=t.value;document.body.append(n);fetch('/received',{method:'POST',body:t.value});t.value=''">Send</button></form>BUSY</body></html>"#;
         let app = axum::Router::new()
             .route(
-                "/",
-                axum::routing::get(move || {
-                    let finished = Arc::clone(&page_finished);
-                    async move {
-                        let mut html = page.replace("unsent human draft", "");
-                        if finished.load(Ordering::SeqCst) {
-                            html = html.replace("id=\"busy\"", "id=\"old-busy\" style=\"display:none\"");
-                            html.push_str(r#"<section data-testid="conversation-turn-2" data-turn="assistant" data-turn-id="finished-answer"><div data-message-author-role="assistant" data-message-id="finished-answer">Final answer from server.</div><button data-testid="copy-turn-action-button">Copy</button></section>"#);
+                "/{group}",
+                axum::routing::get(
+                    move |axum::extract::Path(group): axum::extract::Path<String>| {
+                        let (ready, visits) = (page_ready.clone(), page_visits.clone());
+                        async move {
+                            if !matches!(group.as_str(), "a" | "b") {
+                                return axum::response::Html(String::new());
+                            }
+                            eprintln!("DELIVERY_PAGE_VISIT={group}");
+                            visits.fetch_add(1, Ordering::SeqCst);
+                            if group == "a" && ready.load(Ordering::SeqCst) == 2 {
+                                return axum::response::Html(
+                                    "<html><body>Loading</body></html>".into(),
+                                );
+                            }
+                            axum::response::Html(page.replace(
+                                "BUSY",
+                                if group == "b" || ready.load(Ordering::SeqCst) != 0 {
+                                    ""
+                                } else {
+                                    r#"<button aria-label="Stop streaming">Stop</button>"#
+                                },
+                            ))
                         }
-                        axum::response::Html(html)
-                    }
-                }),
+                    },
+                ),
             )
             .route(
                 "/received",
-                axum::routing::post(move || {
-                    let received = Arc::clone(&received);
+                axum::routing::post(move |body: String| {
+                    let sink = sink.clone();
                     async move {
-                        received.fetch_add(1, Ordering::SeqCst);
+                        sink.lock().expect("sink").push(body);
                         "ok"
                     }
                 }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("fixture listener");
-        let url = format!("http://{}/", listener.local_addr().expect("address"));
+            .expect("fixture");
+        let url = format!("http://{}", listener.local_addr().expect("address"));
         let server = tokio::spawn(async move { axum::serve(listener, app).await });
-        let work_state = state.clone();
-        let work_home = home.clone();
-        let work_browser = Arc::clone(&browser);
-        let profile = harness.profile();
-        let operation = async move {
-            let state = work_state;
-            let home = work_home;
-            let browser = work_browser;
-            let call = |op: &'static str, values: Value| {
-                daemon_call(
-                    &state,
-                    op,
-                    values.as_object().cloned().expect("test arguments"),
-                )
-            };
-            let created = call("group_create", json!({"title":"real browser retry"}))
-                .await
-                .expect("create group");
-            let gid = created["group"]["group_id"].as_str().expect("group id");
-            call("actor_add",json!({"group_id":gid,"actor_id":"web","runtime":"web_model","by":"user","env":{"CCCC_WEB_MODEL_DELIVERY_MODE":"browser"}})).await.expect("actor");
-            call(
-                "actor_start",
-                json!({"group_id":gid,"actor_id":"web","by":"user"}),
-            )
-            .await
-            .expect("start");
-            web_model_connectors::save_browser_target(
-                &home,
-                gid,
-                "web",
-                Some(json!({"kind":"existing_chat","url":url})),
-            )
-            .expect("local fixture target");
-            let source=call("send",json!({"group_id":gid,"by":"user","to":["web"],"text":"BROWSER_RETRY_REPORT","message_mode":"mail"})).await.expect("Mail");
-            let source_id = source["event"]["id"].as_str().expect("source id");
-            call(
-                "message_deliver",
-                json!({"group_id":gid,"by":"user","source_event_id":source_id,"actor_ids":["web"]}),
-            )
-            .await
-            .expect("promote");
-            browser
-                .ensure_open(surface_key(), &profile, &url, 800, 600)
-                .await
-                .expect("real Chrome");
-            let busy = deliver_pending(&state, gid, "web")
-                .await
-                .expect("busy attempt");
-            assert!(matches!(busy, DeliveryOutcome::Idle));
-            assert_eq!(
-                count.load(Ordering::SeqCst),
-                0,
-                "sent during the current answer"
-            );
-            // No DOM edits: only the server learns that the leader finished.
-            // The late report must resume without the user refreshing/clicking.
-            finished.store(true, Ordering::SeqCst);
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let deadline = std::time::Instant::now() + Duration::from_secs(15);
-            loop {
-                let outcome = deliver_pending(&state, gid, "web").await.expect("recheck");
-                if matches!(outcome, DeliveryOutcome::Submitted) {
-                    break;
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "server completed, but stale stop button stranded the original report"
-                );
-                tokio::time::sleep(Duration::from_millis(300)).await;
+        let result=futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
+            let call=|op,values:Value|daemon_call(&state,op,values.as_object().cloned().expect("args"));
+            let mut groups=Vec::new();
+            for name in ["a","b"] {
+                let created=call("group_create",json!({"title":name})).await.expect("group");
+                let gid=created["group"]["group_id"].as_str().expect("gid").to_owned();
+                call("actor_add",json!({"group_id":gid,"actor_id":"web","runtime":"web_model","by":"user","env":{"CCCC_WEB_MODEL_DELIVERY_MODE":"browser"}})).await.expect("actor");
+                call("actor_start",json!({"group_id":gid,"actor_id":"web","by":"user"})).await.expect("start");
+                web_model_connectors::save_browser_target(&state.home,&gid,"web",Some(json!({"kind":"existing_chat","url":format!("{url}/{name}")}))).expect("target");
+                assert!(matches!(deliver_pending(&state,&gid,"web").await.expect("no work"),DeliveryOutcome::Idle));
+                groups.push(gid);
             }
-            assert!(matches!(
-                deliver_pending(&state, gid, "web")
-                    .await
-                    .expect("after recovery"),
-                DeliveryOutcome::Idle
-            ));
-            assert_eq!(
-                count.load(Ordering::SeqCst),
-                1,
-                "duplicate browser submission"
-            );
-            let store = GroupStore::new(home.clone()).expect("store");
-            let events =
-                ledger::read_all(&store.ledger_path(gid).expect("ledger")).expect("events");
-            assert_eq!(
-                events.iter().filter(|e| e.kind == "chat.message").count(),
-                1
-            );
-            let transitions = events
-                .iter()
-                .filter(|e| e.kind == "runtime.delivery" && e.data["source_event_id"] == source_id)
-                .filter_map(|e| e.data["state"].as_str())
-                .collect::<Vec<_>>();
-            assert_eq!(transitions.iter().filter(|s| **s == "accepted").count(), 1);
-            let mail = call(
-                "inbox_peek",
-                json!({"group_id":gid,"actor_id":"web","by":"web"}),
-            )
-            .await
-            .expect("mail unchanged");
-            assert_eq!(mail["messages"].as_array().expect("messages").len(), 1);
-            timeout(Duration::from_secs(2), async {
-                loop {
-                    let count = browser
-                        .sessions
-                        .lock()
-                        .await
-                        .get(surface_key())
-                        .expect("native relay test operation")
-                        .browser
-                        .pages()
-                        .await
-                        .expect("native relay test operation")
-                        .len();
-                    if count == 1 {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .expect("temporary target close notification");
-            assert_eq!(
-                browser
-                    .sessions
-                    .lock()
-                    .await
-                    .get(surface_key())
-                    .expect("session")
-                    .browser
-                    .pages()
-                    .await
-                    .expect("pages")
-                    .len(),
-                1,
-                "freshness tab leaked"
-            );
-            let original = browser
-                .sessions
-                .lock()
-                .await
-                .get(surface_key())
-                .expect("session")
-                .page
-                .clone();
-            original
-                .evaluate("document.querySelector('#old-busy').style.display='block'")
-                .await
-                .expect("native relay test operation");
-            let handled_source = call(
-                "send",
-                json!({"group_id":gid,"by":"user","to":["web"],
-                "text":"HANDLED_THROUGH_TOOLS","message_mode":"mail"}),
-            )
-            .await
-            .expect("native relay test operation");
-            let handled_id = handled_source["event"]["id"]
-                .as_str()
-                .expect("native relay test operation");
-            call("message_deliver",json!({"group_id":gid,"by":"user","source_event_id":handled_id,"actor_ids":["web"]})).await.expect("native relay test operation");
-            for _ in 0..2 {
-                assert!(matches!(
-                    deliver_pending(&state, gid, "web")
-                        .await
-                        .expect("native relay test operation"),
-                    DeliveryOutcome::Idle
-                ));
+            assert_eq!(visits.load(Ordering::SeqCst),0,"enabled members alone must not open Chrome");
+            let mut sources=Vec::new();
+            for (i,gid) in groups.iter().enumerate() {
+                let source=call("send",json!({"group_id":gid,"by":"user","to":["web"],"text":format!("REPORT_{i}"),"message_mode":"send"})).await.expect("report");
+                sources.push(source["event"]["id"].as_str().expect("id").to_owned());
             }
-            let pulled = call(
-                "runtime_wait_next_turn",
-                json!({"group_id":gid,"actor_id":"web","by":"web","transport":"web_model_pull"}),
-            )
-            .await
-            .expect("native relay test operation");
-            assert_eq!(pulled["status"], "work_available");
-            call("runtime_complete_turn",json!({"group_id":gid,"actor_id":"web","by":"web",
-                "event_ids":pulled["turn"]["event_ids"],"turn_id":pulled["turn"]["turn_id"],"status":"done"})).await.expect("native relay test operation");
-            assert!(matches!(
-                deliver_pending(&state, gid, "web")
-                    .await
-                    .expect("native relay test operation"),
-                DeliveryOutcome::Idle
-            ));
-            assert_eq!(
-                load_target(&state, gid, "web").expect("native relay test operation")["last_delivery_status"],
-                "handled"
-            );
-            assert_eq!(
-                count.load(Ordering::SeqCst),
-                1,
-                "handled report was sent again"
-            );
-            timeout(Duration::from_secs(2), async {
+            let (a,b)=tokio::join!(biased;
+                visit_pending(&state,&groups[0],"web",true),
+                visit_pending(&state,&groups[1],"web",true));
+            a.expect("busy visit"); b.expect("concurrent group respects cooldown");
+            assert_eq!(state.browser_surfaces.info(surface_key()).await["active"],false,"busy check must close Chrome");
+            assert_eq!(visits.load(Ordering::SeqCst),1,"one navigation, no confirmation tab or extra reload");
+            let deadline=super::super::web_model_browser::next_delivery_check(&state.home).expect("deadline").expect("persisted");
+            assert!((deadline-chrono::Utc::now()).num_seconds()>285,"five-minute cooldown");
+            let process_view=HomeLayout::from_path(state.home.root().to_path_buf()).expect("reopened home");
+            assert_eq!(super::super::web_model_browser::next_delivery_check(&process_view).expect("restart"),Some(deadline));
+            ready.store(1,Ordering::SeqCst); // Only the server changes; no message or UI refresh.
+            for _ in 0..20 { for gid in &groups { deliver_pending(&state,gid,"web").await.expect("early tick"); } }
+            assert_eq!(visits.load(Ordering::SeqCst),1,"another group or tick bypassed the account cooldown");
+            assert!(received.lock().expect("sink").is_empty());
+            assert_eq!(super::super::web_model_browser::next_delivery_check(&state.home).expect("unchanged"),Some(deadline));
+            // Another report joins the original native batch without resetting the deadline.
+            call("send",json!({"group_id":groups[0],"by":"user","to":["web"],"text":"JOINED_REPORT","message_mode":"send"})).await.expect("late report");
+            deliver_pending(&state,&groups[0],"web").await.expect("new event while cooling down");
+            assert_eq!(visits.load(Ordering::SeqCst),1);
+            // A genuinely incomplete next page also closes, without falsely recording delivery.
+            ready.store(2,Ordering::SeqCst);
+            cccc_core::fs::write_json(&state.home.root().join("state/web_model_browser/_shared/delivery_check.json"),&json!({"not_before":chrono::Utc::now()-chrono::Duration::seconds(1)})).expect("first elapsed clock");
+            super::super::web_model_supervisor::ensure_running_actor(&state,None,false).await;
+            wait_for_original_receipt(&state,&groups[1],&sources[1]).await;
+            // Preserve the native 30-second composer deadline, plus normal close time.
+            timeout(Duration::from_secs(40),async {
                 loop {
-                    let count = browser
-                        .sessions
-                        .lock()
-                        .await
-                        .get(surface_key())
-                        .expect("native relay test operation")
-                        .browser
-                        .pages()
-                        .await
-                        .expect("native relay test operation")
-                        .len();
-                    if count == 1 {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    let guard=state.browser_surfaces.web_model_operation.lock().await;
+                    let target=load_target(&state,&groups[0],"web").expect("loading status");
+                    if visits.load(Ordering::SeqCst) == 3 && target["last_delivery_status"] == "deferred"
+                        && state.browser_surfaces.info(surface_key()).await["active"] == false { break; }
+                    drop(guard); tokio::time::sleep(Duration::from_millis(20)).await;
                 }
-            })
-            .await
-            .expect("temporary target close notification");
-            assert_eq!(
-                browser
-                    .sessions
-                    .lock()
-                    .await
-                    .get(surface_key())
-                    .expect("native relay test operation")
-                    .browser
-                    .pages()
-                    .await
-                    .expect("native relay test operation")
-                    .len(),
-                1
-            );
-            let paused_source=call("send",json!({"group_id":gid,"by":"user","to":["web"],"text":"PAUSED_CHECK","message_mode":"mail"})).await.expect("native relay test operation");
-            call("message_deliver",json!({"group_id":gid,"by":"user","source_event_id":paused_source["event"]["id"],"actor_ids":["web"]})).await.expect("native relay test operation");
-            for _ in 0..2 {
-                let _ = deliver_pending(&state, gid, "web")
-                    .await
-                    .expect("native relay test operation");
+            }).await.expect("A rechecked after B received its report");
+            assert_eq!(state.browser_surfaces.info(surface_key()).await["active"],false);
+            assert_eq!(visits.load(Ordering::SeqCst),3);
+            assert_eq!(received.lock().expect("sink").len(),1,"incomplete A page received a false submission");
+            assert!(received.lock().expect("sink")[0].contains("REPORT_1"),"busy A starved ready B");
+            ready.store(1,Ordering::SeqCst);
+            // Advance the persisted clock boundary, never change the production interval.
+            cccc_core::fs::write_json(&state.home.root().join("state/web_model_browser/_shared/delivery_check.json"),&json!({"not_before":chrono::Utc::now()-chrono::Duration::seconds(1)})).expect("elapsed clock");
+            for (gid,id) in groups.iter().zip(&sources) {
+                super::super::web_model_supervisor::ensure_running_actor(&state,Some(gid),false).await;
+                wait_for_original_receipt(&state,gid,id).await;
+                assert_eq!(state.browser_surfaces.info(surface_key()).await["active"],false,"verified report must release the delivery browser");
             }
-            let mut paused = store.load(gid).expect("native relay test operation");
-            paused.state = cccc_contracts::GroupState::Paused;
-            store.save(&paused).expect("native relay test operation");
-            assert!(matches!(
-                deliver_pending(&state, gid, "web")
-                    .await
-                    .expect("native relay test operation"),
-                DeliveryOutcome::Stopped
-            ));
-            assert_eq!(
-                count.load(Ordering::SeqCst),
-                1,
-                "pause did not prevent delivery"
-            );
-            timeout(Duration::from_secs(2), async {
-                loop {
-                    let count = browser
-                        .sessions
-                        .lock()
-                        .await
-                        .get(surface_key())
-                        .expect("native relay test operation")
-                        .browser
-                        .pages()
-                        .await
-                        .expect("native relay test operation")
-                        .len();
-                    if count == 1 {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .expect("temporary target close notification");
-            assert_eq!(
-                browser
-                    .sessions
-                    .lock()
-                    .await
-                    .get(surface_key())
-                    .expect("native relay test operation")
-                    .browser
-                    .pages()
-                    .await
-                    .expect("native relay test operation")
-                    .len(),
-                1,
-                "pause leaked the check tab"
-            );
-            eprintln!(
-                "STALE_STOP_RECOVERY: original late report once; handled report not resent; pause cancels temporary check"
-            );
-        };
-        // Cleanup runs even if a test assertion panics in the task.
-        let outcome = tokio::spawn(timeout(Duration::from_secs(40), operation)).await;
-        finish_browser_test(harness, vec![server, api_server]).await;
-        outcome
-            .expect("browser flow assertions")
-            .expect("bounded browser flow");
+            assert_eq!(received.lock().expect("sink").len(),2,"each original batch sent once");
+            assert!(received.lock().expect("sink")[1].contains("JOINED_REPORT"),"late report was lost");
+            for (i,text) in received.lock().expect("sink").iter().enumerate() {
+                let expected=1-i;
+                assert!(text.contains(&format!("REPORT_{expected}")),"wrong group");
+                assert!(!text.contains(&format!("REPORT_{i}")),"mixed groups");
+            }
+            let sent_visits=visits.load(Ordering::SeqCst);
+            for gid in &groups { deliver_pending(&state,gid,"web").await.expect("no more work"); }
+            assert_eq!(visits.load(Ordering::SeqCst),sent_visits,"idle browser reopened");
+            assert!(super::super::web_model_browser::automation_hold(&state.home).is_none(),"automatic close must not act like a user's Stop");
+            // Explicit setup remains open; only a real admitted report can take it over.
+            super::super::web_model_browser::ensure_open_for_actor(&state,&groups[0],"web",800,600).await.expect("explicit setup");
+            visit_pending(&state,&groups[0],"web",true).await.expect("empty manual setup");
+            assert_eq!(state.browser_surfaces.info(surface_key()).await["active"],true);
+            let page=state.browser_surfaces.sessions.lock().await.get(surface_key()).expect("manual page").page.clone();
+            page.evaluate("document.querySelector('textarea').value='HUMAN_DRAFT'").await.expect("own fixture draft");
+            call("send",json!({"group_id":groups[0],"by":"user","to":["web"],"text":"AFTER_DRAFT","message_mode":"send"})).await.expect("report during setup");
+            visit_pending(&state,&groups[0],"web",true).await.expect("protected draft");
+            assert_eq!(state.browser_surfaces.info(surface_key()).await["active"],true,"manual draft was closed");
+            assert_eq!(page.evaluate("document.querySelector('textarea').value").await.expect("draft").into_value::<String>().expect("text"),"HUMAN_DRAFT");
+            page.evaluate("document.querySelector('textarea').value=''").await.expect("user clears fixture draft");
+            visit_pending(&state,&groups[0],"web",true).await.expect("handoff to automatic delivery");
+            assert_eq!(state.browser_surfaces.info(surface_key()).await["active"],false,"manual setup never yielded to automatic delivery");
+            assert_eq!(received.lock().expect("sink").len(),3);
+            let final_visits=visits.load(Ordering::SeqCst);
+            super::super::web_model_browser::hold_on_restriction(&state,&json!({"submission_evidence":"not_sent_rate_limited"})).expect("rate-limit hold");
+            call("send",json!({"group_id":groups[1],"by":"user","to":["web"],"text":"RETAIN_DURING_HOLD","message_mode":"send"})).await.expect("retained report");
+            visit_pending(&state,&groups[1],"web",true).await.expect("held account");
+            assert_eq!(visits.load(Ordering::SeqCst),final_visits,"another group's report bypassed account restriction");
+            eprintln!("ON_DEMAND: no-work closed; busy/loading close; durable 300s shared gate; native supervisor resumes originals once; manual setup/draft protected then handed off; account hold blocks all groups");
+        })).await;
+        finish_browser_test(harness, vec![server]).await;
+        result.expect("on-demand assertions");
     }
 
     #[tokio::test]
@@ -2673,7 +2399,9 @@ mod retry_integration_tests {
             }
             for _ in 0..10 {
                 for (_, gid) in &groups {
-                    ensure_worker(state.clone(), gid.clone(), "web".into()).await;
+                    deliver_pending(&state, gid, "web")
+                        .await
+                        .expect("manual delivery visit");
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -2715,6 +2443,11 @@ mod retry_integration_tests {
                 .command(surface_key(), &json!({"t":"click","x":390,"y":28}))
                 .await
                 .expect("resolve own fixture draft");
+            for (_, group) in &groups {
+                deliver_pending(&state, group, "web")
+                    .await
+                    .expect("manual delivery visit");
+            }
             timeout(Duration::from_secs(12), async {
                 loop {
                     if records.lock().expect("records").len() == 2 {
@@ -2776,7 +2509,9 @@ mod retry_integration_tests {
             }
             for _ in 0..10 {
                 for (_, gid) in &groups {
-                    ensure_worker(state.clone(), gid.clone(), "web".into()).await;
+                    deliver_pending(&state, gid, "web")
+                        .await
+                        .expect("manual delivery visit");
                 }
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
@@ -2809,7 +2544,9 @@ mod retry_integration_tests {
             )
             .await
             .expect("promote original");
-            ensure_worker(state.clone(), gid.clone(), "web".into()).await;
+            deliver_pending(&state, gid, "web")
+                .await
+                .expect("manual delivery visit");
             timeout(Duration::from_secs(8), async {
                 loop {
                     let target = load_target(&state, gid, "web").expect("target");
@@ -2826,6 +2563,11 @@ mod retry_integration_tests {
             .await
             .expect("original report deferred");
             page.evaluate("history.replaceState({},'', '/archived');document.body.innerHTML='<main><p>This conversation is archived</p><button>Unarchive</button></main>'").await.expect("foreign page archived");
+            for (_, group) in &groups {
+                deliver_pending(&state, group, "web")
+                    .await
+                    .expect("manual delivery visit");
+            }
             timeout(Duration::from_secs(12), async {
                 loop {
                     let events =
@@ -2934,19 +2676,6 @@ mod retry_integration_tests {
                 target["last_submission_evidence"]["submission_evidence"],
                 "not_sent_composer_unavailable"
             );
-            assert!(
-                fresh_turn_after_exhaustion(
-                    &state,
-                    gid,
-                    "web",
-                    target["last_delivery_turn_id"]
-                        .as_str()
-                        .expect("exhausted turn")
-                )
-                .await
-                .expect("budget check")
-                .is_none()
-            );
             let status = call("ledger_statuses", json!({"group_id":gid,"event_ids":[id]}))
                 .await
                 .expect("status");
@@ -2971,25 +2700,18 @@ mod retry_integration_tests {
                 .page
                 .clone();
             server_ready.store(true, Ordering::SeqCst);
-            // Only the server changes. The old tab still has no input; production
-            // recovery must reopen the same conversation without any user refresh.
-            timeout(Duration::from_secs(20), async {
-                loop {
-                    if matches!(
-                        deliver_pending(&state, gid, "web").await.expect("recover"),
-                        DeliveryOutcome::Submitted
-                    ) {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(150)).await;
-                }
-            })
-            .await
-            .expect("original late report recovered");
-            assert_eq!(
-                browser.info(surface_key()).await["metadata"]["relay_recovery"]["reason"],
-                "fresh_completed_turn"
-            );
+            // This fixture is explicitly opened by the user, so automation must
+            // not replace it. Automatic cold-page recovery is tested separately.
+            browser
+                .command(surface_key(), &json!({"t":"navigate","url":url}))
+                .await
+                .expect("user restores own page");
+            assert!(matches!(
+                deliver_pending(&state, gid, "web")
+                    .await
+                    .expect("recovered input"),
+                DeliveryOutcome::Submitted
+            ));
             assert!(matches!(
                 deliver_pending(&state, gid, "web")
                     .await
@@ -3040,7 +2762,7 @@ mod retry_integration_tests {
                 "last_submission_evidence":null})).expect("persist pre-send interruption");
             assert!(matches!(
                 deliver_pending(&state, gid, "web").await.expect("release"),
-                DeliveryOutcome::Deferred(..)
+                DeliveryOutcome::Deferred
             ));
             assert!(matches!(
                 deliver_pending(&state, gid, "web").await.expect("retry"),
@@ -3379,13 +3101,7 @@ mod retry_integration_tests {
                     sends, 0,
                     "old chat received the report after binding was revoked"
                 );
-                assert!(matches!(delivered, Ok(DeliveryOutcome::Deferred(..))));
-                if let Ok(DeliveryOutcome::Deferred(_, deferred_owner)) = &delivered {
-                    assert!(
-                        deferred_owner.as_ref() == &old_owner,
-                        "retry budget must retain its original owner"
-                    );
-                }
+                assert!(matches!(delivered, Ok(DeliveryOutcome::Deferred)));
                 assert_eq!(
                     load_target(&state, gid, "web").expect("F1 browser fixture value"),
                     json!({}),

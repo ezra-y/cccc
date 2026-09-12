@@ -91,8 +91,22 @@ pub(super) async fn ensure_open_for_actor(
     width: u32,
     height: u32,
 ) -> Result<Value, ApiError> {
-    validate_actor(state, group_id, actor_id)?;
     let _operation = state.browser_surfaces.web_model_operation.lock().await;
+    state
+        .browser_surfaces
+        .web_model_auto_close
+        .store(false, std::sync::atomic::Ordering::Release);
+    ensure_open_for_actor_locked(state, group_id, actor_id, width, height).await
+}
+
+pub(super) async fn ensure_open_for_actor_locked(
+    state: &AppState,
+    group_id: &str,
+    actor_id: &str,
+    width: u32,
+    height: u32,
+) -> Result<Value, ApiError> {
+    validate_actor(state, group_id, actor_id)?;
     if another_chat_is_pending(state, group_id, actor_id)? {
         return Err(ApiError::bad(
             "Another group's newly submitted chat is still acquiring its conversation URL; wait for it before navigating the shared browser",
@@ -136,7 +150,9 @@ pub(super) async fn ensure_open_for_actor(
                 tracing::warn!(group_id, actor_id, %error, "saved ChatGPT conversation could not be opened");
             }
         }
-        Some("existing_chat" | "new_chat") => {
+        Some("existing_chat" | "new_chat")
+            if state.browser_surfaces.info(session_key).await["url"] != open_url =>
+        {
             if let Err(error) = state
                 .browser_surfaces
                 .navigate_to_url(session_key, &open_url)
@@ -311,6 +327,47 @@ async fn shared_info(
     shared_payload(&state, query.inspect).await
 }
 
+// One durable account-wide deadline, not another queue. Pending messages stay
+// in the native runtime ledger. New events/groups/restarts cannot bypass it.
+pub(super) fn next_delivery_check(
+    home: &cccc_core::HomeLayout,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, ApiError> {
+    let path = home
+        .root()
+        .join("state/web_model_browser/_shared/delivery_check.json");
+    let value: Value = match cccc_core::fs::read_json(&path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_error(error)),
+    };
+    if !value.is_object() || value.get("not_before").is_none() {
+        return Err(ApiError::bad("invalid browser delivery deadline"));
+    }
+    if value["not_before"].is_null() {
+        return Ok(None);
+    }
+    let date = value["not_before"]
+        .as_str()
+        .ok_or_else(|| ApiError::bad("invalid browser delivery deadline"))?;
+    chrono::DateTime::parse_from_rfc3339(date)
+        .map(|date| Some(date.with_timezone(&chrono::Utc)))
+        .map_err(|error| ApiError::bad(error.to_string()))
+}
+
+pub(super) fn schedule_delivery_check(
+    home: &cccc_core::HomeLayout,
+    retry: bool,
+) -> Result<(), ApiError> {
+    let deadline = retry.then(|| chrono::Utc::now() + chrono::Duration::minutes(5));
+    cccc_core::fs::write_json(
+        &home
+            .root()
+            .join("state/web_model_browser/_shared/delivery_check.json"),
+        &json!({"not_before":deadline}),
+    )
+    .map_err(io_error)
+}
+
 fn automation_hold_path(home: &cccc_core::HomeLayout) -> std::path::PathBuf {
     home.root()
         .join("state/web_model_browser/_shared/automation_hold.json")
@@ -336,11 +393,20 @@ fn pause_automation(home: &cccc_core::HomeLayout, reason: &str) -> std::io::Resu
 }
 
 fn resume_automation(home: &cccc_core::HomeLayout) -> std::io::Result<()> {
-    match std::fs::remove_file(automation_hold_path(home)) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+    // Only an explicit Open with a ready page reaches this function. It can
+    // clear a stale/corrupt retry deadline without allowing timer-driven retries.
+    for path in [
+        home.root()
+            .join("state/web_model_browser/_shared/delivery_check.json"),
+        automation_hold_path(home),
+    ] {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
     }
+    Ok(())
 }
 
 pub(super) fn hold_on_restriction(state: &AppState, evidence: &Value) -> Result<(), ApiError> {
@@ -363,6 +429,10 @@ async fn shared_open(
     Json(body): Json<Value>,
 ) -> ApiResult {
     let _operation = state.browser_surfaces.web_model_operation.lock().await;
+    state
+        .browser_surfaces
+        .web_model_auto_close
+        .store(false, std::sync::atomic::Ordering::Release);
     let width = dimension(&body, "width", 1366, 640, 2560);
     let height = dimension(&body, "height", 900, 480, 1600);
     let headless = use_headless_browser(
@@ -640,7 +710,19 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
             "No browser delivery has been recorded yet.",
         ),
     };
-    let (next_action, next_label, next_reason) = if !active {
+    let next_check = next_delivery_check(&state.home)?;
+    let automatically_closed = !active && automation_hold(&state.home).is_none();
+    let (next_action, next_label, next_reason) = if let Some(action) =
+        waiting.filter(|_| automatically_closed)
+    {
+        action
+    } else if automatically_closed && matches!(target_state, "bound" | "new_chat_pending") {
+        (
+            "none",
+            "Browser opens when needed",
+            "The dedicated browser stays closed until a report needs delivery. No action is required.",
+        )
+    } else if !active {
         (
             "open_chatgpt",
             "Open ChatGPT",
@@ -714,6 +796,7 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
         "delivery_target":target,
         "delivery":{
             "state":delivery_state,"label":delivery_label,"reason":delivery_reason,
+            "next_check_at":next_check,
             "last_delivery_id":target["last_delivery_id"],
             "last_turn_id":target["last_delivery_turn_id"],
             "last_event_ids":target["last_delivery_event_ids"],
@@ -804,12 +887,12 @@ fn deferred_action(evidence: &str) -> (&'static str, &'static str, &'static str)
         "not_sent_chat_busy" => (
             "wait_for_reply",
             "Wait for the current reply",
-            "ChatGPT is still responding. The queued report will resume when this reply ends.",
+            "ChatGPT is still responding. Automatic delivery closes the browser and checks again after five minutes; the original report stays queued.",
         ),
         "not_sent_composer_unavailable" => (
             "inspect_browser",
             "Restoring the conversation",
-            "The ChatGPT input did not load. The original report is retained while the same conversation is rechecked.",
+            "The ChatGPT input did not load. Automatic delivery closes the browser and checks again after five minutes; the original report is retained.",
         ),
         "not_sent_login_required" => (
             "login_chatgpt",
@@ -1010,6 +1093,42 @@ mod launch_policy_tests {
 #[cfg(test)]
 mod automation_hold_tests {
     use super::*;
+
+    #[test]
+    fn delivery_deadline_is_account_wide_persistent_and_fail_closed() {
+        let temp = tempfile::tempdir().expect("isolated state");
+        let home = cccc_core::HomeLayout::from_path(temp.path().join("home")).expect("home");
+        home.initialize().expect("init");
+        assert!(next_delivery_check(&home).expect("new account").is_none());
+        let before = chrono::Utc::now();
+        schedule_delivery_check(&home, true).expect("busy close");
+        let after = chrono::Utc::now();
+        let restarted =
+            cccc_core::HomeLayout::from_path(home.root().to_path_buf()).expect("restart");
+        let deadline = next_delivery_check(&restarted)
+            .expect("stored")
+            .expect("deadline");
+        assert!(deadline >= before + chrono::Duration::minutes(5));
+        assert!(deadline <= after + chrono::Duration::minutes(5));
+        for _ in 0..100 {
+            assert_eq!(
+                next_delivery_check(&home).expect("read-only"),
+                Some(deadline)
+            );
+        }
+        let path = home
+            .root()
+            .join("state/web_model_browser/_shared/delivery_check.json");
+        for corrupt in ["invalid-json", "{}", "[]", r#"{"not_before":"invalid"}"#] {
+            std::fs::write(&path, corrupt).expect("corrupt fixture");
+            assert!(
+                next_delivery_check(&home).is_err(),
+                "bad state authorized browser access"
+            );
+        }
+        schedule_delivery_check(&home, false).expect("completed visit");
+        assert!(next_delivery_check(&home).expect("no waiting").is_none());
+    }
 
     #[test]
     fn account_hold_survives_new_state_and_is_fail_closed() {
