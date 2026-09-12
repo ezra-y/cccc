@@ -164,7 +164,9 @@ impl SystemBrowserLaunch {
                 Ok(connected)
             }
             Err(error) => {
-                if let Err(cleanup_error) = terminate_browser_for_profile(profile).await {
+                if let Err(cleanup_error) =
+                    terminate_browser_for_profile(profile, Duration::ZERO).await
+                {
                     tracing::warn!(%cleanup_error, "failed to clean up background system browser launch");
                 }
                 Err(error)
@@ -264,7 +266,8 @@ impl SystemBrowserLaunch {
     pub(super) async fn stop(&mut self) {
         #[cfg(target_os = "macos")]
         if let Some(profile) = self.managed_profile.take()
-            && let Err(error) = terminate_browser_for_profile(&profile).await
+            && let Err(error) =
+                terminate_browser_for_profile(&profile, super::BROWSER_EXIT_TIMEOUT).await
         {
             tracing::warn!(%error, "failed to stop managed system browser process");
         }
@@ -1010,5 +1013,92 @@ mod tests {
             macos_app_bundle(&launch.executable),
             Some(Path::new("/Applications/Google Chrome.app"))
         );
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod exit_lifecycle_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    async fn cleanup_case(stuck: bool) {
+        let temp = tempfile::tempdir().expect("isolated profile");
+        let profile = temp.path();
+        let script = r#"import os, pathlib, signal, sys, time
+p = pathlib.Path(sys.argv[1])
+signal.signal(signal.SIGTERM, lambda *_: os._exit(99))
+(p / 'ready').write_text('ready')
+while not (p / 'close-request').exists(): time.sleep(0.01)
+if sys.argv[2] == 'stuck': time.sleep(30)
+else:
+    time.sleep(0.8)
+    (p / 'cleanup-finished').write_text('finished')
+"#;
+        let mut child = tokio::process::Command::new("python3")
+            .args(["-c", script])
+            .arg(profile)
+            .arg(if stuck { "stuck" } else { "normal" })
+            .kill_on_drop(true)
+            .spawn()
+            .expect("owned fake browser");
+        let pid = child.id().expect("pid");
+        symlink(format!("localhost-{pid}"), profile.join("SingletonLock")).expect("profile owner");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !profile.join("ready").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fake browser ready");
+        let mut launch = SystemBrowserLaunch {
+            executable: PathBuf::from(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
+            channel: "chrome",
+            cdp_port: 0,
+            background: true,
+            width: 800,
+            height: 600,
+            display: None,
+            vnc_error: String::new(),
+            managed_profile: Some(profile.to_owned()),
+        };
+        std::fs::write(profile.join("close-request"), "close").expect("normal close requested");
+        let started = Instant::now();
+        tokio::time::timeout(Duration::from_secs(9), launch.stop())
+            .await
+            .expect("bounded stop");
+        let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .expect("child exited")
+            .expect("child status");
+        if stuck {
+            assert!(
+                started.elapsed() >= super::super::BROWSER_EXIT_TIMEOUT,
+                "fallback termination ran before the graceful-exit deadline"
+            );
+            assert_eq!(
+                status.code(),
+                Some(99),
+                "stuck process must still terminate"
+            );
+        } else {
+            assert!(status.success(), "normal cleanup was interrupted: {status}");
+            assert!(profile.join("cleanup-finished").exists());
+            assert!(
+                started.elapsed() < super::super::BROWSER_EXIT_TIMEOUT,
+                "completed exit unnecessarily waited out the full deadline"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn macos_stop_allows_the_browser_to_finish_normal_cleanup() {
+        cleanup_case(false).await;
+    }
+
+    #[tokio::test]
+    async fn macos_stop_terminates_a_stuck_browser_after_the_grace_period() {
+        cleanup_case(true).await;
     }
 }
