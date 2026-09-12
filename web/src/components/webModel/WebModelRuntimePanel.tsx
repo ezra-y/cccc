@@ -320,12 +320,13 @@ export function WebModelRuntimePanel({
   isVisible,
   readOnly,
 }: WebModelRuntimePanelProps) {
-  const { t } = useTranslation("chat");
+  const { t } = useTranslation(["chat", "settings"]);
   const openSettingsTarget = useModalStore((state) => state.openSettingsTarget);
   const [session, setSession] = useState<WebModelBrowserSession | null>(null);
   const [error, setError] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const [surfaceRestartNonce, setSurfaceRestartNonce] = useState(0);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const currentSelectionRef = useRef({ groupId, actorId: String(actor.id || "").trim() });
   const actorId = String(actor.id || "").trim();
   currentSelectionRef.current = { groupId, actorId };
@@ -333,6 +334,7 @@ export function WebModelRuntimePanel({
   const canControlSurface = Boolean(isVisible && isRunning && !readOnly && groupId && actorId);
 
   useEffect(() => {
+    setPreviewOpen(false);
     if (!isVisible || !groupId || !actorId) {
       setSession(null);
       setError("");
@@ -382,6 +384,7 @@ export function WebModelRuntimePanel({
       setError(message);
       return;
     }
+    if (!window.confirm(t("settings:webModels.chatgpt.t05.confirmRestartBrowser"))) return;
     setBusyAction("reload");
     setError("");
     try {
@@ -391,7 +394,20 @@ export function WebModelRuntimePanel({
         setError(resp.error?.message || "Failed to restart ChatGPT browser.");
         return;
       }
-      setSession(resp.result.browser_session || {});
+      const reopened = await api.openWebModelBrowserSurfaceSession({
+        groupId,
+        actorId,
+        width: 1366,
+        height: 900,
+        inspect: true,
+      });
+      if (!matchesWebModelActorSelection(currentSelectionRef.current, groupId, actorId)) return;
+      if (!reopened.ok) {
+        setError(reopened.error.message);
+        return;
+      }
+      setSession(reopened.result.browser_session || {});
+      setPreviewOpen(true);
       setSurfaceRestartNonce((value) => value + 1);
     } finally {
       if (matchesWebModelActorSelection(currentSelectionRef.current, groupId, actorId))
@@ -680,6 +696,38 @@ export function WebModelRuntimePanel({
             />
             <button
               type="button"
+              data-t05-change="member-preview-toggle"
+              onClick={() => setPreviewOpen((value) => !value)}
+              className={iconButtonClass(false)}
+            >
+              {t(`settings:webModels.chatgpt.t05.${previewOpen ? "hide" : "view"}`)}
+            </button>
+            <button
+              type="button"
+              data-t05-change="member-open-browser"
+              disabled={!canControlSurface || Boolean(busyAction)}
+              onClick={() =>
+                void startBrowserSurfaceSession({ width: 1366, height: 900 })
+                  .then((result) => {
+                    if (
+                      result.ok &&
+                      matchesWebModelActorSelection(currentSelectionRef.current, groupId, actorId)
+                    )
+                      setPreviewOpen(true);
+                  })
+                  .catch((error) => {
+                    if (
+                      matchesWebModelActorSelection(currentSelectionRef.current, groupId, actorId)
+                    )
+                      setError(String(error));
+                  })
+              }
+              className={iconButtonClass(false)}
+            >
+              {t("settings:webModels.chatgpt.buttons.openChatGpt")}
+            </button>
+            <button
+              type="button"
               onClick={reloadChatGptPage}
               disabled={Boolean(busyAction) || !isRunning}
               className={iconButtonClass(false)}
@@ -701,7 +749,7 @@ export function WebModelRuntimePanel({
         </div>
       </div>
 
-      {canControlSurface ? (
+      {canControlSurface && previewOpen ? (
         <div className="min-h-0 flex-1 overflow-hidden">
           <ProjectedBrowserSurfacePanel
             key={`chatgpt-runtime-surface:${groupId}:${actorId}:${surfaceRestartNonce}`}
@@ -711,7 +759,6 @@ export function WebModelRuntimePanel({
             chromeMode="embedded"
             viewportClassName="h-full min-h-0"
             loadSession={loadBrowserSurfaceSession}
-            startSession={startBrowserSurfaceSession}
             webSocketUrl={api.getWebModelBrowserSurfaceWebSocketUrl(groupId, actorId)}
             fallbackUrl="https://chatgpt.com/"
             labels={{

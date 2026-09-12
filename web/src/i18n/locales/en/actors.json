@@ -283,5 +283,21 @@
   "actorControls": "Controls for {{actor}}",
   "takeControl": "Take control",
   "readOnlyConnection": "Read only",
-  "terminalReadOnlyNotice": "This terminal is read-only. Take control to type here."
+  "terminalReadOnlyNotice": "This terminal is read-only. Take control to type here.",
+  "historyTruncated": "Older output has already been discarded from the backlog.",
+  "t05Members": {
+    "entry": "Members {{count}}",
+    "title": "Group members",
+    "nativeEditors": "Open a member’s native details to configure, start, stop or remove them.",
+    "foreman": "Foreman",
+    "peer": "Peer",
+    "empty": "This group has no members yet.",
+    "changeForeman": "Change Foreman",
+    "web_model": "Web model",
+    "local": "Local model",
+    "add": "Add member",
+    "noLocalRuntime": "No available local runtime was detected. Install one first.",
+    "confirmRuntimeChange": "Change “{{member}}” in “{{group}}” from {{previous}} to {{next}}?",
+    "webBindingRetired": "This member’s current web conversation binding will be retired. Other members and sign-in stay unchanged."
+  }
 }

@@ -283,5 +283,21 @@
   "actorControls": "{{actor}} 的操作",
   "takeControl": "接管",
   "readOnlyConnection": "只读",
-  "terminalReadOnlyNotice": "此终端当前只读，接管后可以输入。"
+  "terminalReadOnlyNotice": "此终端当前只读，接管后可以输入。",
+  "historyTruncated": "更早的输出已从缓冲区中淘汰。",
+  "t05Members": {
+    "entry": "成员 {{count}}",
+    "title": "本组成员",
+    "nativeEditors": "点击成员进入原版详情；配置、启停和移除仍在那里操作。",
+    "foreman": "组长",
+    "peer": "成员",
+    "empty": "此工作组还没有成员。",
+    "changeForeman": "更换组长",
+    "web_model": "网页模型",
+    "local": "本地模型",
+    "add": "添加成员",
+    "noLocalRuntime": "没有检测到可用的本地模型，请先完成安装。",
+    "confirmRuntimeChange": "确认将「{{group}}」中的「{{member}}」从 {{previous}} 更换为 {{next}}？",
+    "webBindingRetired": "该成员原来的网页聊天连接将失效。其他成员与登录账号不变。"
+  }
 }

@@ -1909,3 +1909,10 @@ input.border-none {
   outline: none !important;
   box-shadow: none !important;
 }
+
+/* This one menu is deliberately opaque. The shared glass modal remains unchanged. */
+.t05-members-menu.glass-modal {
+  background: var(--color-bg-secondary);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}

@@ -59,6 +59,8 @@ describe("MessageFooter", () => {
         onCopyMessageText={() => undefined}
         onShowRecipients={() => undefined}
         onReply={() => undefined}
+        onRelay={() => undefined}
+        eventId="event-1"
         canReply={false}
         event={{ id: "event-1", kind: "chat.message", by: "user", data: {} }}
       />,
@@ -66,5 +68,7 @@ describe("MessageFooter", () => {
 
     expect(markup).toContain("mailMessageHint");
     expect(markup).toContain("modeMail");
+    expect(markup).toMatch(/>relayToGroup<\/button>/);
+    expect(markup).not.toMatch(/>relay<\/button>/);
   });
 });
