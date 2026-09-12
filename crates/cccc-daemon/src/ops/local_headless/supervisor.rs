@@ -5,7 +5,7 @@ use cccc_core::{GroupDoc, HomeLayout};
 use serde_json::Map;
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use tracing::Instrument;
 
@@ -293,16 +293,54 @@ pub fn submit_batch(
         return false;
     };
     if item.has_terminal() {
-        return submit_with_startup_prompt(&item.startup_prompt, &delivery, |prepared| {
-            super::super::actor_delivery::submit_terminal_text(
-                &group.group_id,
-                actor,
-                prepared,
-                cancelled,
-            )
-        });
+        return submit_managed_prompt(
+            &item.managed,
+            &item.startup_prompt,
+            source_events,
+            &delivery,
+            cancelled,
+            &group.group_id,
+            &actor.id,
+        );
     }
     false
+}
+
+pub(crate) fn submit_managed_prompt(
+    managed: &super::super::codex_voice_analyst::AnalystSession,
+    startup_prompt: &Mutex<Option<String>>,
+    source_events: &[Event],
+    delivery: &str,
+    cancelled: &AtomicBool,
+    group_id: &str,
+    actor_id: &str,
+) -> bool {
+    // Keep the historical prefix so a retry after upgrading reuses the
+    // delegation already persisted for an earlier first delivery.
+    let delegation = format!(
+        "actor-start:{}",
+        source_events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>()
+            .join(":")
+    );
+    submit_with_startup_prompt(startup_prompt, delivery, |prepared| {
+        if cancelled.load(Ordering::Acquire) {
+            return false;
+        }
+        match super::block_on_managed(managed.start_turn(
+            managed.generation(),
+            &delegation,
+            prepared,
+        )) {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(%error, %group_id, %actor_id, "managed member prompt was not confirmed");
+                false
+            }
+        }
+    })
 }
 
 fn submit_with_startup_prompt(
@@ -402,7 +440,6 @@ mod tests {
     fn startup_prompt_is_sent_with_the_first_accepted_delivery_only() {
         let startup_prompt = Mutex::new(Some("startup context".to_owned()));
         let mut attempts = Vec::new();
-
         assert!(!submit_with_startup_prompt(
             &startup_prompt,
             "first delivery",

@@ -12,6 +12,8 @@ mod supervisor_managed_tests;
 
 #[cfg(test)]
 pub(crate) use managed_reader::verify_claude_reader_release;
+#[cfg(test)]
+pub(crate) use supervisor::submit_managed_prompt;
 
 pub(crate) use events::{
     append as append_event, append_with_dedupe as append_event_with_dedupe,

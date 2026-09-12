@@ -77,7 +77,17 @@ impl Drop for ChildOwner {
 
 fn stop_child(child: &mut Child, tree: &OwnedProcessTree) -> io::Result<()> {
     if tree.try_wait(|| child.try_wait())?.is_none() {
-        tree.request_stop()?;
+        if let Err(error) = tree.request_stop() {
+            // Darwin can deny a group signal after exit has begun but before
+            // waitid publishes it. Confirm this owned child's exit within the
+            // existing deadline; never suppress a denial for a live process.
+            if !cfg!(target_vendor = "apple")
+                || error.kind() != io::ErrorKind::PermissionDenied
+                || !wait_bounded(child, tree, STOP_TIMEOUT)?
+            {
+                return Err(error);
+            }
+        }
         if !wait_bounded(child, tree, STOP_TIMEOUT)? {
             tree.terminate()?;
         }
