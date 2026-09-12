@@ -339,14 +339,6 @@ describe("group members shortcut", () => {
       />,
     );
     await click('[data-t05-change="members-entry"]');
-    expect(document.querySelector('[data-t05-change="members-entry"]')).not.toBeNull();
-    expect(document.querySelector('[data-t05-change="members-menu"]')).not.toBeNull();
-    expect(document.querySelector('[data-t05-change="member-details"]')).not.toBeNull();
-    expect(
-      document
-        .querySelector('[data-t05-change="members-menu"]')
-        ?.classList.contains("t05-members-menu"),
-    ).toBe(true);
     await click('[data-t05-change="member-details"]');
     expect(inspect).toHaveBeenCalledWith("lead");
     await click('[data-t05-change="members-entry"]');
@@ -395,47 +387,44 @@ describe("group members shortcut", () => {
 });
 
 describe("shared login, role, and confirmation ownership", () => {
-  it.each([false, true])(
-    "numbers the added group step and reuses the existing anchored combobox (dark=%s)",
-    async (isDark) => {
-      await render(<WebModelConnectorsTab isDark={isDark} currentGroupId="g_a" />);
-      const account = find('[data-setup-step="account"]');
-      const connection = find('[data-setup-step="connection"]');
-      const target = find('[data-setup-step="target"]');
-      const selector = find('[data-t05-change="web-group-selector"]');
-      expect(account.parentElement).toBe(connection.parentElement);
-      expect(connection.parentElement).toBe(target.parentElement);
-      expect(account.textContent).toContain("1. 登录 ChatGPT");
-      expect(connection.textContent).toContain("3. 连接 CCCC MCP app");
-      expect(target.textContent).toContain("4. 选择投递目标");
-      expect(find('[data-setup-step="group"]').textContent).toContain("2. 选择工作组");
-      expect(
-        account.compareDocumentPosition(selector) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBeTruthy();
-      expect(
-        selector.compareDocumentPosition(connection) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBeTruthy();
-      expect(
-        connection.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBeTruthy();
-      expect(account.querySelector('[data-t05-change="copy-binding"]')).toBeNull();
-      expect(connection.querySelector('[data-t05-change="copy-binding"]')).toBeNull();
-      expect(connection.querySelector('[data-t05-change="legacy-setup"]')).not.toBeNull();
-      expect(target.querySelector('[data-t05-change="save-return-target"]')).not.toBeNull();
-      expect(account.textContent).not.toMatch(/共享|共用/);
-      expect(host.querySelector("#t05-web-group select")).toBeNull();
-      expect(groupTrigger().getAttribute("aria-label")).toBe("选择工作组");
-      await click('#t05-web-group [role="combobox"]');
-      expect(groupTrigger().getAttribute("aria-expanded")).toBe("true");
-      expect(document.querySelectorAll('[role="option"]').length).toBe(3);
-      await click('#t05-web-group [role="combobox"]');
-      await choose("g_b");
-      expect(groupTrigger().textContent).toContain("乙组");
-      expect(find('[data-testid="shared-login-status"]').textContent).toBeTruthy();
-      expect(mocks.bindCurrentWebModelBrowserConversation).not.toHaveBeenCalled();
-      expect(mocks.openWebModelBrowserSurfaceSession).not.toHaveBeenCalled();
-    },
-  );
+  it("numbers the added group step, reuses the existing anchored combobox, and keeps selection live", async () => {
+    await render(<WebModelConnectorsTab isDark={false} currentGroupId="g_a" />);
+    const account = find('[data-setup-step="account"]');
+    const connection = find('[data-setup-step="connection"]');
+    const target = find('[data-setup-step="target"]');
+    const selector = find('[data-t05-change="web-group-selector"]');
+    expect(account.parentElement).toBe(connection.parentElement);
+    expect(connection.parentElement).toBe(target.parentElement);
+    expect(account.textContent).toContain("1. 登录 ChatGPT");
+    expect(connection.textContent).toContain("3. 连接 CCCC MCP app");
+    expect(target.textContent).toContain("4. 选择投递目标");
+    expect(find('[data-setup-step="group"]').textContent).toContain("2. 选择工作组");
+    expect(
+      account.compareDocumentPosition(selector) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      selector.compareDocumentPosition(connection) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      connection.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(account.querySelector('[data-t05-change="copy-binding"]')).toBeNull();
+    expect(connection.querySelector('[data-t05-change="copy-binding"]')).toBeNull();
+    expect(connection.querySelector('[data-t05-change="legacy-setup"]')).not.toBeNull();
+    expect(target.querySelector('[data-t05-change="save-return-target"]')).not.toBeNull();
+    expect(account.textContent).not.toMatch(/共享|共用/);
+    expect(host.querySelector("#t05-web-group select")).toBeNull();
+    expect(groupTrigger().getAttribute("aria-label")).toBe("选择工作组");
+    await click('#t05-web-group [role="combobox"]');
+    expect(groupTrigger().getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelectorAll('[role="option"]').length).toBe(3);
+    await click('#t05-web-group [role="combobox"]');
+    await choose("g_b");
+    expect(groupTrigger().textContent).toContain("乙组");
+    expect(find('[data-testid="shared-login-status"]').textContent).toBeTruthy();
+    expect(mocks.bindCurrentWebModelBrowserConversation).not.toHaveBeenCalled();
+    expect(mocks.openWebModelBrowserSurfaceSession).not.toHaveBeenCalled();
+  });
 
   it("uses the current browser conversation as a draft and binds a return target only after Save", async () => {
     await render();

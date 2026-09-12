@@ -1758,6 +1758,75 @@ mod retry_integration_tests {
         .expect("original report has one durable receipt");
     }
 
+    /// Shared isolated home and daemon; tests keep their own HTTP routes and assertions.
+    struct BrowserHarness {
+        api: axum::Router,
+        state: AppState,
+        home: HomeLayout,
+        browser: Arc<crate::browser_surface::BrowserSurfaces>,
+        daemon: tokio::task::JoinHandle<anyhow::Result<()>>,
+        shutdown: tokio::sync::broadcast::Sender<()>,
+        _temp: tempfile::TempDir,
+    }
+
+    async fn browser_harness(label: &str, poll: Duration) -> BrowserHarness {
+        let temp = tempfile::tempdir().expect("isolated test home");
+        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+        home.initialize().expect("initialize");
+        let (shutdown, _) = tokio::sync::broadcast::channel(1);
+        let (api, _, browser, state) = crate::app_with_shutdown(
+            home.clone(),
+            shutdown.clone(),
+            crate::WebMode::Normal,
+            None,
+            crate::LiveBinding {
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
+            label.into(),
+        );
+        let daemon_home = home.clone();
+        let daemon = tokio::spawn(async move { cccc_daemon::run(daemon_home).await });
+        for _ in 0..100 {
+            if daemon_call(&state, "ping", Default::default())
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(poll).await;
+        }
+        BrowserHarness {
+            api,
+            state,
+            home,
+            browser,
+            daemon,
+            shutdown,
+            _temp: temp,
+        }
+    }
+
+    impl BrowserHarness {
+        fn profile(&self) -> std::path::PathBuf {
+            self._temp.path().join("browser")
+        }
+    }
+
+    async fn finish_browser_test(
+        harness: BrowserHarness,
+        servers: Vec<tokio::task::JoinHandle<std::io::Result<()>>>,
+    ) {
+        let _ = harness.shutdown.send(());
+        let _ = harness.browser.close(surface_key()).await;
+        let _ = daemon_call(&harness.state, "shutdown", Default::default()).await;
+        let _ = timeout(Duration::from_secs(5), harness.daemon).await;
+        for server in servers {
+            server.abort();
+            let _ = server.await;
+        }
+    }
+
     #[test]
     fn rejected_session_guard_cannot_release_the_current_owner() {
         for registry in [&WORKERS, &IN_FLIGHT] {
@@ -1789,32 +1858,11 @@ mod retry_integration_tests {
         if crate::system_browser_path().is_none() {
             return;
         }
-        let temp = tempfile::tempdir().expect("isolated test home");
-        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
-        home.initialize().expect("initialize");
-        let (shutdown, _) = tokio::sync::broadcast::channel(1);
-        let (api, _, browser, state) = crate::app_with_shutdown(
-            home.clone(),
-            shutdown.clone(),
-            crate::WebMode::Normal,
-            None,
-            crate::LiveBinding {
-                host: "127.0.0.1".into(),
-                port: 0,
-            },
-            "test-browser-retry".into(),
-        );
-        let daemon_home = home.clone();
-        let daemon = tokio::spawn(async move { cccc_daemon::run(daemon_home).await });
-        for _ in 0..100 {
-            if daemon_call(&state, "ping", Default::default())
-                .await
-                .is_ok()
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let harness = browser_harness("test-browser-retry", Duration::from_millis(10)).await;
+        let state = harness.state.clone();
+        let home = harness.home.clone();
+        let browser = Arc::clone(&harness.browser);
+        let api = harness.api.clone();
         let api_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("API listener");
@@ -1858,7 +1906,7 @@ mod retry_integration_tests {
         let work_state = state.clone();
         let work_home = home.clone();
         let work_browser = Arc::clone(&browser);
-        let profile = temp.path().join("browser");
+        let profile = harness.profile();
         let operation = async move {
             let state = work_state;
             let home = work_home;
@@ -2157,12 +2205,7 @@ mod retry_integration_tests {
         };
         // Cleanup runs even if a test assertion panics in the task.
         let outcome = tokio::spawn(timeout(Duration::from_secs(40), operation)).await;
-        let _ = browser.close(surface_key()).await;
-        let _ = shutdown.send(());
-        let _ = daemon_call(&state, "shutdown", Default::default()).await;
-        let _ = timeout(Duration::from_secs(5), daemon).await;
-        server.abort();
-        api_server.abort();
+        finish_browser_test(harness, vec![server, api_server]).await;
         outcome
             .expect("browser flow assertions")
             .expect("bounded browser flow");
@@ -2173,32 +2216,11 @@ mod retry_integration_tests {
         if crate::system_browser_path().is_none() {
             return;
         }
-        let temp = tempfile::tempdir().expect("isolated test home");
-        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
-        home.initialize().expect("initialize");
-        let (shutdown, _) = tokio::sync::broadcast::channel(1);
-        let (api, _, browser, state) = crate::app_with_shutdown(
-            home.clone(),
-            shutdown.clone(),
-            crate::WebMode::Normal,
-            None,
-            crate::LiveBinding {
-                host: "127.0.0.1".into(),
-                port: 0,
-            },
-            "test-browser-retry".into(),
-        );
-        let daemon_home = home.clone();
-        let daemon = tokio::spawn(async move { cccc_daemon::run(daemon_home).await });
-        for _ in 0..100 {
-            if daemon_call(&state, "ping", Default::default())
-                .await
-                .is_ok()
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let harness = browser_harness("test-browser-retry", Duration::from_millis(10)).await;
+        let state = harness.state.clone();
+        let home = harness.home.clone();
+        let browser = Arc::clone(&harness.browser);
+        let api = harness.api.clone();
         let api_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("API listener");
@@ -2254,7 +2276,7 @@ mod retry_integration_tests {
         let work_state = state.clone();
         let work_home = home.clone();
         let work_browser = Arc::clone(&browser);
-        let profile = temp.path().join("browser");
+        let profile = harness.profile();
         let operation = async move {
             let state = work_state;
             let home = work_home;
@@ -2541,12 +2563,7 @@ mod retry_integration_tests {
         };
         // Cleanup runs even if a test assertion panics in the task.
         let outcome = tokio::spawn(timeout(Duration::from_secs(40), operation)).await;
-        let _ = browser.close(surface_key()).await;
-        let _ = shutdown.send(());
-        let _ = daemon_call(&state, "shutdown", Default::default()).await;
-        let _ = timeout(Duration::from_secs(5), daemon).await;
-        server.abort();
-        api_server.abort();
+        finish_browser_test(harness, vec![server, api_server]).await;
         outcome
             .expect("browser flow assertions")
             .expect("bounded browser flow");
@@ -2557,32 +2574,10 @@ mod retry_integration_tests {
         if crate::system_browser_path().is_none() {
             return;
         }
-        let temp = tempfile::tempdir().expect("isolated home");
-        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
-        home.initialize().expect("initialize");
-        let (shutdown, _) = tokio::sync::broadcast::channel(1);
-        let (_, _, browser, state) = crate::app_with_shutdown(
-            home.clone(),
-            shutdown.clone(),
-            crate::WebMode::Normal,
-            None,
-            crate::LiveBinding {
-                host: "127.0.0.1".into(),
-                port: 0,
-            },
-            "two-group-browser".into(),
-        );
-        let daemon_home = home.clone();
-        let daemon = tokio::spawn(async move { cccc_daemon::run(daemon_home).await });
-        for _ in 0..100 {
-            if daemon_call(&state, "ping", Default::default())
-                .await
-                .is_ok()
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let harness = browser_harness("two-group-browser", Duration::from_millis(10)).await;
+        let state = harness.state.clone();
+        let home = harness.home.clone();
+        let browser = Arc::clone(&harness.browser);
         let records = Arc::new(Mutex::new(Vec::<Value>::new()));
         let sink = Arc::clone(&records);
         let page = r#"<!doctype html><body>
@@ -2617,7 +2612,7 @@ mod retry_integration_tests {
         let work_state = state.clone();
         let work_home = home.clone();
         let work_browser = Arc::clone(&browser);
-        let profile = temp.path().join("browser");
+        let profile = harness.profile();
         let operation = async move {
             let state = work_state;
             let home = work_home;
@@ -2860,11 +2855,7 @@ mod retry_integration_tests {
             );
         };
         let result = tokio::spawn(timeout(Duration::from_secs(35), operation)).await;
-        let _ = shutdown.send(());
-        let _ = browser.close(surface_key()).await;
-        let _ = daemon_call(&state, "shutdown", Default::default()).await;
-        let _ = timeout(Duration::from_secs(5), daemon).await;
-        server.abort();
+        finish_browser_test(harness, vec![server]).await;
         result
             .expect("test assertions")
             .expect("bounded two-group flow");
@@ -2875,32 +2866,10 @@ mod retry_integration_tests {
         if crate::system_browser_path().is_none() {
             return;
         }
-        let temp = tempfile::tempdir().expect("isolated home");
-        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
-        home.initialize().expect("initialize");
-        let (shutdown, _) = tokio::sync::broadcast::channel(1);
-        let (_, _, browser, state) = crate::app_with_shutdown(
-            home.clone(),
-            shutdown.clone(),
-            crate::WebMode::Normal,
-            None,
-            crate::LiveBinding {
-                host: "127.0.0.1".into(),
-                port: 0,
-            },
-            "presend".into(),
-        );
-        let daemon_home = home.clone();
-        let daemon = tokio::spawn(async move { cccc_daemon::run(daemon_home).await });
-        for _ in 0..100 {
-            if daemon_call(&state, "ping", Default::default())
-                .await
-                .is_ok()
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        let harness = browser_harness("presend", Duration::from_millis(20)).await;
+        let state = harness.state.clone();
+        let home = harness.home.clone();
+        let browser = Arc::clone(&harness.browser);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener");
@@ -2950,7 +2919,7 @@ mod retry_integration_tests {
             .await
             .expect("promote");
             browser
-                .ensure_open(surface_key(), &temp.path().join("chrome"), &url, 800, 600)
+                .ensure_open(surface_key(), &harness.profile(), &url, 800, 600)
                 .await
                 .expect("chrome");
             let first = deliver_pending(&state, gid, "web")
@@ -3110,19 +3079,15 @@ mod retry_integration_tests {
                 "submission_ambiguous"
             );
         };
-        let result = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(timeout(
+        let caught = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(timeout(
             Duration::from_secs(60),
             operation,
         )))
         .await;
-        let _ = browser.close(surface_key()).await;
-        let _ = shutdown.send(());
-        let _ = daemon_call(&state, "shutdown", Default::default()).await;
-        let _ = timeout(Duration::from_secs(5), daemon).await;
-        server.abort();
-        result
+        finish_browser_test(harness, vec![server]).await;
+        caught
             .expect("pre-send assertions")
-            .expect("bounded pre-send test");
+            .expect("bounded pre-send flow");
     }
     #[derive(Clone, Copy, PartialEq)]
     enum BindingRace {
@@ -3173,32 +3138,10 @@ mod retry_integration_tests {
             crate::system_browser_path().is_some(),
             "real Chrome required"
         );
-        let temp = tempfile::tempdir().expect("isolated home");
-        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
-        home.initialize().expect("init");
-        let (shutdown, _) = tokio::sync::broadcast::channel(1);
-        let (_, _, browser, state) = crate::app_with_shutdown(
-            home.clone(),
-            shutdown.clone(),
-            crate::WebMode::Normal,
-            None,
-            crate::LiveBinding {
-                host: "127.0.0.1".into(),
-                port: 0,
-            },
-            "rebind-test".into(),
-        );
-        let daemon_home = home.clone();
-        let daemon = tokio::spawn(async move { cccc_daemon::run(daemon_home).await });
-        for _ in 0..100 {
-            if daemon_call(&state, "ping", Default::default())
-                .await
-                .is_ok()
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        let harness = browser_harness("rebind-test", Duration::from_millis(20)).await;
+        let state = harness.state.clone();
+        let home = harness.home.clone();
+        let browser = Arc::clone(&harness.browser);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener");
@@ -3248,7 +3191,7 @@ mod retry_integration_tests {
             .expect("target");
             let source=call("send",json!({"group_id":gid,"by":"user","to":["web"],"text":"OLD_CHAT_ONLY_REPORT","message_mode":"send"})).await.expect("source");
             browser
-                .ensure_open(surface_key(), &temp.path().join("browser"), &url, 800, 600)
+                .ensure_open(surface_key(), &harness.profile(), &url, 800, 600)
                 .await
                 .expect("browser");
             let page = browser
@@ -3531,18 +3474,14 @@ mod retry_integration_tests {
                 "report must have one terminal handoff fact"
             );
         };
-        let result = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(timeout(
+        let caught = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(timeout(
             Duration::from_secs(20),
             operation,
         )))
         .await;
-        let _ = browser.close(surface_key()).await;
-        let _ = daemon_call(&state, "shutdown", Default::default()).await;
-        let _ = timeout(Duration::from_secs(5), daemon).await;
-        server.abort();
-        let _ = server.await;
-        result
+        finish_browser_test(harness, vec![server]).await;
+        caught
             .expect("binding race assertions")
-            .expect("bounded test");
+            .expect("bounded binding race flow");
     }
 }
